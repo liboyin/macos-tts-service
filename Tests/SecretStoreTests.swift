@@ -23,14 +23,16 @@ final class SecretStoreTests: MockURLProtocolTestCase {
         // write. Retaining it on failure lets the user recover instead of losing their only key.
         let store = InMemorySecretStore()
         let legacySecret = "test-legacy-openai-key"
-        UserDefaults.standard.set(legacySecret, forKey: SettingsKeys.legacyOpenAIAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: legacySecret
+        ])
         store.nextError = .unavailable
 
-        let outcome = APIKeyMigrationService(secretStore: store).migrateLegacyAPIKeys()
+        let outcome = APIKeyMigrationService(secretStore: store).migrateLegacyAPIKeys(defaults: defaults)
 
         XCTAssertEqual(outcome.pendingProviders, [.openAI])
         XCTAssertEqual(outcome.securedSecrets, [:])
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.legacyOpenAIAPIKey), legacySecret)
+        XCTAssertEqual(defaults.string(forKey: SettingsKeys.legacyOpenAIAPIKey), legacySecret)
         XCTAssertNil(try store.secret(for: .openAI))
         XCTAssertEqual(
             APIKeyMigrationService.failureMessage(for: .openAI),
@@ -43,17 +45,19 @@ final class SecretStoreTests: MockURLProtocolTestCase {
         // warning. Otherwise migration can fail silently and leave plaintext credentials behind.
         let store = InMemorySecretStore()
         let legacySecret = "test-legacy-custom-key"
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set(legacySecret, forKey: SettingsKeys.legacyCustomAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.legacyCustomAPIKey: legacySecret
+        ])
         store.nextError = .unavailable
 
-        let manager = TestNetworkFactory.makeManager(secretStore: store)
+        let manager = TestNetworkFactory.makeManager(secretStore: store, defaults: defaults)
 
         XCTAssertEqual(
             manager.lastError,
             "Couldn't secure the saved Custom API key. It remains in Settings; check Keychain access and try again."
         )
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.legacyCustomAPIKey), legacySecret)
+        XCTAssertEqual(defaults.string(forKey: SettingsKeys.legacyCustomAPIKey), legacySecret)
         XCTAssertNil(try? store.secret(for: .custom))
     }
 
@@ -63,19 +67,21 @@ final class SecretStoreTests: MockURLProtocolTestCase {
         // legacy value carries no secret to rescue — only a retained plaintext key can still be
         // lost, which is exactly what a failed migration leaves behind.
         let store = InMemorySecretStore()
-        UserDefaults.standard.set("test-legacy-openai-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
-        UserDefaults.standard.set("", forKey: SettingsKeys.legacyGeminiAPIKey)
-        UserDefaults.standard.set("test-legacy-custom-key", forKey: SettingsKeys.legacyCustomAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: "test-legacy-openai-key",
+            SettingsKeys.legacyGeminiAPIKey: "",
+            SettingsKeys.legacyCustomAPIKey: "test-legacy-custom-key"
+        ])
         store.nextError = .unavailable
 
-        XCTAssertEqual(APIKeyMigrationService.pendingProviders(defaults: .standard), [.openAI, .custom])
+        XCTAssertEqual(APIKeyMigrationService.pendingProviders(defaults: defaults), [.openAI, .custom])
 
         // The scheduled failure lands on the first provider the migration touches.
-        let outcome = APIKeyMigrationService(secretStore: store).migrateLegacyAPIKeys()
+        let outcome = APIKeyMigrationService(secretStore: store).migrateLegacyAPIKeys(defaults: defaults)
 
         XCTAssertEqual(outcome.pendingProviders, [.openAI])
         XCTAssertEqual(outcome.securedSecrets, [.custom: "test-legacy-custom-key"])
-        XCTAssertEqual(APIKeyMigrationService.pendingProviders(defaults: .standard), [.openAI])
+        XCTAssertEqual(APIKeyMigrationService.pendingProviders(defaults: defaults), [.openAI])
     }
 
     func testMigrationMovesLegacySecretOnceAndDoesNotRewriteOnTheNextLaunch() throws {
@@ -83,16 +89,18 @@ final class SecretStoreTests: MockURLProtocolTestCase {
         // exposes it through UserDefaults nor overwrites the Keychain value again.
         let store = InMemorySecretStore()
         let legacySecret = "test-legacy-gemini-key"
-        UserDefaults.standard.set(legacySecret, forKey: SettingsKeys.legacyGeminiAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyGeminiAPIKey: legacySecret
+        ])
         let migration = APIKeyMigrationService(secretStore: store)
 
-        XCTAssertEqual(migration.migrateLegacyAPIKeys(), APIKeyMigrationOutcome(securedSecrets: [.gemini: legacySecret]))
+        XCTAssertEqual(migration.migrateLegacyAPIKeys(defaults: defaults), APIKeyMigrationOutcome(securedSecrets: [.gemini: legacySecret]))
         XCTAssertEqual(try store.secret(for: .gemini), legacySecret)
-        XCTAssertNil(UserDefaults.standard.object(forKey: SettingsKeys.legacyGeminiAPIKey))
+        XCTAssertNil(defaults.object(forKey: SettingsKeys.legacyGeminiAPIKey))
 
-        XCTAssertEqual(migration.migrateLegacyAPIKeys(), APIKeyMigrationOutcome())
+        XCTAssertEqual(migration.migrateLegacyAPIKeys(defaults: defaults), APIKeyMigrationOutcome())
         XCTAssertEqual(try store.secret(for: .gemini), legacySecret)
-        XCTAssertNil(UserDefaults.standard.object(forKey: SettingsKeys.legacyGeminiAPIKey))
+        XCTAssertNil(defaults.object(forKey: SettingsKeys.legacyGeminiAPIKey))
     }
 
     func testMigrationPreservesAnExistingKeychainSecretOverStalePlaintext() throws {
@@ -100,13 +108,15 @@ final class SecretStoreTests: MockURLProtocolTestCase {
         // the stale plaintext value without overwriting the newer Keychain credential.
         let store = InMemorySecretStore()
         try store.saveSecret("test-new-keychain-key", for: .openAI)
-        UserDefaults.standard.set("test-stale-legacy-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: "test-stale-legacy-key"
+        ])
 
         XCTAssertEqual(
-            APIKeyMigrationService(secretStore: store).migrateLegacyAPIKeys(),
+            APIKeyMigrationService(secretStore: store).migrateLegacyAPIKeys(defaults: defaults),
             APIKeyMigrationOutcome(securedSecrets: [.openAI: "test-new-keychain-key"])
         )
         XCTAssertEqual(try store.secret(for: .openAI), "test-new-keychain-key")
-        XCTAssertNil(UserDefaults.standard.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
+        XCTAssertNil(defaults.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
     }
 }

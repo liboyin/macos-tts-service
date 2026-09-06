@@ -9,10 +9,12 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         // secured key back proves the Keychain answers again, so leaving the mount-time read
         // failure on screen would send the user after a problem the app has already watched resolve
         // — next to a recovery action that has just disappeared.
-        UserDefaults.standard.set("test-legacy-openai-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: "test-legacy-openai-key"
+        ])
         let secretStore = ScriptedSecretStore()
         secretStore.failingProviders = [.openAI]
-        let secretState = SettingsSecretState(secretStore: secretStore, defaults: .standard)
+        let secretState = SettingsSecretState(secretStore: secretStore, defaults: defaults)
         XCTAssertEqual(
             secretState.errorMessage,
             "Couldn't read the saved OpenAI API key. Check Keychain access and try again."
@@ -31,10 +33,12 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         // named first must not read as "storage works now" while another key is still unreadable.
         // The user would be left with no warning at all about a key they cannot use, next to a
         // recovery action that has just disappeared.
-        UserDefaults.standard.set("test-legacy-openai-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: "test-legacy-openai-key"
+        ])
         let secretStore = ScriptedSecretStore()
         secretStore.failingProviders = [.openAI, .gemini]
-        let secretState = SettingsSecretState(secretStore: secretStore, defaults: .standard)
+        let secretState = SettingsSecretState(secretStore: secretStore, defaults: defaults)
         XCTAssertEqual(
             secretState.errorMessage,
             "Couldn't read the saved OpenAI API key. Check Keychain access and try again."
@@ -55,9 +59,11 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         // WHY: Securing an old key says nothing about the key the user just typed and the store
         // refused. Treating the retry as a general all-clear would drop the only sign that their
         // edit was never persisted, and they would go on believing it had been.
-        UserDefaults.standard.set("test-legacy-openai-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: "test-legacy-openai-key"
+        ])
         let secretStore = ScriptedSecretStore()
-        let secretState = SettingsSecretState(secretStore: secretStore, defaults: .standard)
+        let secretState = SettingsSecretState(secretStore: secretStore, defaults: defaults)
         secretStore.failingProviders = [.custom]
         secretState.saveSecret("test-typed-custom-key", for: .custom)
         let saveFailure = "Couldn't save the Custom API key. Check Keychain access and try again."
@@ -76,9 +82,11 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         // secured must not depend on asking the store again. A Keychain that fails in that window
         // would otherwise retire the recovery action while leaving the form and future requests
         // with no credential, and no plaintext left to migrate on a later attempt.
-        UserDefaults.standard.set("test-legacy-openai-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: "test-legacy-openai-key"
+        ])
         let secretStore = ScriptedSecretStore()
-        let secretState = SettingsSecretState(secretStore: secretStore, defaults: .standard)
+        let secretState = SettingsSecretState(secretStore: secretStore, defaults: defaults)
         // The migration's own read is the last one the store will answer.
         secretStore.allowedReadCount = 1
 
@@ -87,7 +95,7 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         XCTAssertEqual(secretState.pendingMigrationProviders, [])
         XCTAssertEqual(secretState.secret(for: .openAI), "test-legacy-openai-key")
         XCTAssertEqual(secretStore.storedSecret(for: .openAI), "test-legacy-openai-key")
-        XCTAssertNil(UserDefaults.standard.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
+        XCTAssertNil(defaults.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
     }
 
     func testClearingAKeyRetiresThePlaintextCopyThatWouldOtherwiseRestoreIt() {
@@ -95,15 +103,17 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         // plaintext copy outlives it, the very action offered to secure their keys would put the
         // withdrawn one back into the Keychain and into the next request — and so would the next
         // launch. The user's own edit is the newer statement of what this key is.
-        UserDefaults.standard.set("test-stale-legacy-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: "test-stale-legacy-key"
+        ])
         let secretStore = ScriptedSecretStore()
         secretStore.seed("test-newer-keychain-key", for: .openAI)
-        let secretState = SettingsSecretState(secretStore: secretStore, defaults: .standard)
+        let secretState = SettingsSecretState(secretStore: secretStore, defaults: defaults)
         XCTAssertEqual(secretState.pendingMigrationProviders, [.openAI])
 
         secretState.saveSecret("", for: .openAI)
 
-        XCTAssertNil(UserDefaults.standard.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
+        XCTAssertNil(defaults.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
         XCTAssertEqual(secretState.pendingMigrationProviders, [])
 
         secretState.retryLegacyKeyMigration()
@@ -118,7 +128,8 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         // which is the same silence the migration retry is careful to avoid.
         let secretStore = ScriptedSecretStore()
         secretStore.failingProviders = [.openAI, .gemini]
-        let secretState = SettingsSecretState(secretStore: secretStore, defaults: .standard)
+        let defaults = makeOwnedDefaults()
+        let secretState = SettingsSecretState(secretStore: secretStore, defaults: defaults)
         XCTAssertEqual(
             secretState.errorMessage,
             "Couldn't read the saved OpenAI API key. Check Keychain access and try again."
@@ -139,7 +150,8 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         // warning up after the store accepted the next one would report a failure that no longer
         // exists, and the user has no other way to tell whether their key is persisted.
         let secretStore = ScriptedSecretStore()
-        let secretState = SettingsSecretState(secretStore: secretStore, defaults: .standard)
+        let defaults = makeOwnedDefaults()
+        let secretState = SettingsSecretState(secretStore: secretStore, defaults: defaults)
         secretStore.failingProviders = [.custom]
         secretState.saveSecret("test-refused-custom-key", for: .custom)
         XCTAssertEqual(
@@ -160,7 +172,8 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         // everything as fine while the first provider's key was still never persisted — and the
         // user's only evidence of it is this line.
         let secretStore = ScriptedSecretStore()
-        let secretState = SettingsSecretState(secretStore: secretStore, defaults: .standard)
+        let defaults = makeOwnedDefaults()
+        let secretState = SettingsSecretState(secretStore: secretStore, defaults: defaults)
         secretStore.failingProviders = [.custom, .openAI]
         secretState.saveSecret("test-refused-custom-key", for: .custom)
         secretState.saveSecret("test-refused-openai-key", for: .openAI)
@@ -186,7 +199,8 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         // older read failure instead would send them looking for a problem they were fixing.
         let secretStore = ScriptedSecretStore()
         secretStore.failingProviders = [.gemini]
-        let secretState = SettingsSecretState(secretStore: secretStore, defaults: .standard)
+        let defaults = makeOwnedDefaults()
+        let secretState = SettingsSecretState(secretStore: secretStore, defaults: defaults)
         secretState.saveSecret("test-refused-gemini-key", for: .gemini)
         secretStore.failingProviders = [.gemini, .openAI]
         secretState.saveSecret("test-refused-openai-key", for: .openAI)
@@ -204,7 +218,8 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         // WHY: A key the store refused is still not persisted, whatever the user types next. Only
         // the provider whose write just succeeded may retire its own warning.
         let secretStore = ScriptedSecretStore()
-        let secretState = SettingsSecretState(secretStore: secretStore, defaults: .standard)
+        let defaults = makeOwnedDefaults()
+        let secretState = SettingsSecretState(secretStore: secretStore, defaults: defaults)
         secretStore.failingProviders = [.custom]
         secretState.saveSecret("test-refused-custom-key", for: .custom)
         let customSaveFailure = "Couldn't save the Custom API key. Check Keychain access and try again."
@@ -222,15 +237,17 @@ final class SettingsSecretStateTests: MockURLProtocolTestCase {
         // WHY: Retiring the plaintext is only safe once the store has accepted the user's own
         // value. Dropping it after a refused edit would destroy the one copy of a key the Keychain
         // never took, which is precisely the loss the migration contract exists to prevent.
-        UserDefaults.standard.set("test-stale-legacy-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: "test-stale-legacy-key"
+        ])
         let secretStore = ScriptedSecretStore()
-        let secretState = SettingsSecretState(secretStore: secretStore, defaults: .standard)
+        let secretState = SettingsSecretState(secretStore: secretStore, defaults: defaults)
         secretStore.failingProviders = [.openAI]
 
         secretState.saveSecret("test-typed-openai-key", for: .openAI)
 
         XCTAssertEqual(
-            UserDefaults.standard.string(forKey: SettingsKeys.legacyOpenAIAPIKey),
+            defaults.string(forKey: SettingsKeys.legacyOpenAIAPIKey),
             "test-stale-legacy-key"
         )
         XCTAssertEqual(secretState.pendingMigrationProviders, [.openAI])

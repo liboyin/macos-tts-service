@@ -7,9 +7,13 @@ final class AppStartupDependenciesTests: XCTestCase {
         // If that startup path falls back to production dependencies, legacy migration can read or
         // delete a developer credential before the mock-test lifecycle is established.
         XCTAssertTrue(HostedTestProcess.isActive, "The hosted test process must select test-owned app startup dependencies.")
-        isolateAppSettingsDefaults()
 
-        let developerDefaults = UserDefaults.standard
+        // `developerDefaults` stands in for the installed app's domain: it is seeded the way a real
+        // installation would be, so a startup path that reached for production preferences would
+        // read these values and migrate this credential. Seeding the actual domain to prove that
+        // would be the very access these regressions exist to forbid, and the automatic branch is
+        // held to the domain itself below, by identity rather than by reading it.
+        let developerDefaults = makeDefaults()
         let hostedDefaults = makeDefaults()
         let developerSecretStore = RecordingSecretStore(secrets: [.custom: "developer-keychain-credential"])
         let hostedSecretStore = RecordingSecretStore()
@@ -55,6 +59,13 @@ final class AppStartupDependenciesTests: XCTestCase {
         XCTAssertFalse(productionDefaultsRequested)
         XCTAssertFalse(productionSecretStoreRequested)
         XCTAssertFalse(defaultDependencies.defaults === developerDefaults)
+        // Naming the domain is not accessing it: identity asks the object for no stored value.
+        // swiftlint:disable:next process_default_settings_store
+        let startupSelectedTheAppsOwnDomain = defaultDependencies.defaults === UserDefaults.standard
+        XCTAssertFalse(
+            startupSelectedTheAppsOwnDomain,
+            "Automatic hosted startup must not select the installed app's own defaults domain."
+        )
         XCTAssertTrue(defaultDependencies.secretStore is InMemorySecretStore)
         XCTAssertTrue(defaultDependencies.networkManager.isCurrentProvider("OpenAI"))
         assertRequestInputs(
@@ -158,21 +169,19 @@ final class AppStartupDependenciesTests: XCTestCase {
         XCTAssertEqual(dependencies.audioPlayer.sampleRate, 12_000)
     }
 
-    func testStartupRegressionDefaultsWriteNeitherToDiskNorToTheAppSettingsDomain() {
-        // WHY: These regressions seed provider settings, so a disk-backed suite made them the only
-        // thing in the repository that writes unbounded state outside the build directory:
-        // `removePersistentDomain` empties a suite but does not delete it, and `cfprefsd` rewrites
-        // the suite's plist into ~/Library/Preferences when the hosted test process exits. The
-        // replacement must also keep its values out of the app's own defaults domain, because the
-        // test bundle is hosted inside the app and a value that falls through to `UserDefaults`'
-        // own storage would reconfigure the developer's installation.
-        isolateAppSettingsDefaults()
-        let preferenceFilesBeforeSeeding = appPreferenceFileNames()
-
+    func testStartupRegressionSettingsStayInTheStorageTheTestOwns() {
+        // WHY: These regressions seed provider settings, and that storage has to be the test's own.
+        // A disk-backed suite would leave a plist behind — `removePersistentDomain` empties a suite
+        // without deleting it, and `cfprefsd` rewrites it into ~/Library/Preferences when the
+        // hosted process exits — and a value falling through to `UserDefaults`' own storage would
+        // reconfigure the developer's installation, because the test bundle is hosted inside the
+        // app. This test proves the seeded storage answers for itself; nothing here inspects the
+        // developer's home directory to say so, which would be reading their state to prove it was
+        // left alone.
         let defaults = makeDefaults()
+        let separatelyOwnedDefaults = makeDefaults()
         SettingsKeys.allUserDefaultsKeys.forEach { defaults.set("seeded-\($0)", forKey: $0) }
         defaults.set(44_100.0, forKey: SettingsKeys.customSampleRate)
-        defaults.synchronize()
 
         XCTAssertEqual(
             defaults.string(forKey: SettingsKeys.apiBaseURL),
@@ -184,15 +193,17 @@ final class AppStartupDependenciesTests: XCTestCase {
             44_100,
             "Typed accessors must resolve through the test-owned storage, not a fallback domain."
         )
-        XCTAssertEqual(
-            appPreferenceFileNames(),
-            preferenceFilesBeforeSeeding,
-            "Seeding a startup regression must not create a preferences file in the developer's home directory."
-        )
+        // Separately owned storage states the narrower property it can actually prove: one owner's
+        // seed reaches no other owner. It does not settle whether reads and writes both fell
+        // through to the inherited storage, because each owner's superclass is built against a
+        // suite of its own, so a fallthrough would land where this store cannot see it. What
+        // settles that is the aggregate view — `testOwnedSettingsStorageIsPrivateToItsOwnerAndIsNotTheAppDomain`
+        // reads back exactly what its owner set and nothing else, which a store answering from a
+        // real domain cannot do.
         for key in SettingsKeys.allUserDefaultsKeys {
             XCTAssertNil(
-                UserDefaults.standard.object(forKey: key),
-                "Seeded startup value for \(key) must not reach the app's own defaults domain."
+                separatelyOwnedDefaults.object(forKey: key),
+                "Seeded startup value for \(key) must not reach storage owned by anyone else."
             )
         }
     }
@@ -221,13 +232,6 @@ final class AppStartupDependenciesTests: XCTestCase {
         InMemoryDefaults()
     }
 
-    /// The app-owned preference file names currently present in the developer's home directory.
-    private func appPreferenceFileNames() -> Set<String> {
-        let preferences = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-            .appendingPathComponent("Library/Preferences", isDirectory: true)
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: preferences.path)) ?? []
-        return Set(names.filter { $0.hasPrefix("com.clipboardtts.") })
-    }
 }
 
 private final class RecordingSecretStore: SecretStoring {

@@ -47,7 +47,7 @@ These choices do not need to be asked again. Validate exact implementation detai
 - Preserve USER_STORIES: the fixed menu icon, Settings-only voice selection, two-click Clear Buffer/Speak behavior, and the clipboard-only OpenAI input-length refusal.
 - Preserve README's immutable request snapshots, ordered generation-authorized callbacks, synchronous cancellation authority, and single bounded Gemini HTTP 500 retry. Completion cannot overtake accepted PCM; published isStreaming is not an end-of-stream signal.
 - Preserve the 0.1-second initial prebuffer, 0.2-second deferred clipboard policy, exact-end seek/replay, and finite Custom sample rates from 8000 through 48000, including fractions.
-- B1 must replace README's instructions to snapshot/clear developer preferences. Until then, establish an isolated test-host identity or disposable user environment before running unsafe legacy tests. A scratch checkout alone does not isolate macOS preferences. Do not seed real preferences to prove that tests avoid them.
+- Tests state settings through storage they own (`makeOwnedDefaults`), never the developer's preferences. Do not reintroduce snapshot/clear/restore of the app's own domain, and do not seed real preferences to prove that tests avoid them; a scratch checkout alone does not isolate macOS preferences.
 
 ### Investigation gates
 
@@ -59,17 +59,13 @@ Finding IDs preserve the full-project review's numbering. NB22 is completed by t
 
 ### Blocking
 
-#### B1 — Tests access and temporarily erase real app preferences
-
-**Validated — source and isolated snapshot probe.** Snapshot/clear/restore can lose settings on process failure and overwrite a concurrent edit; an owned-memory probe demonstrated the latter. **Paths:** [UserDefaultsSnapshot](Tests/UserDefaultsSnapshot.swift), [TestNetworkSupport](Tests/TestNetworkSupport.swift), [SettingsView](Sources/Views/SettingsView.swift), [startup](Sources/ClipboardTTSApp.swift), README. **Boundary/acceptance:** [B1 execution boundary](#b1-execution-boundary). **Readiness:** ready for assignment after establishing a safe baseline environment.
-
 #### B2 — Streaming underrun permanently pauses playback
 
 **Validated — audio probe; legacy Task 52, promoted to Blocking.** The timer pauses at the received buffer end, and one-shot automatic playback never resumes later PCM. A 0.3-second buffer grew to 0.6 seconds while playback stayed paused at 0.3. **Paths:** [AudioPlayerManager](Sources/Managers/AudioPlayerManager.swift), [network completion](Sources/Managers/TTSNetworkManager+Failures.swift), focused audio/network tests. **Depends on:** NB19's ordered terminal-event interface (D1). **Acceptance:** distinguish open-stream underrun, manual pause, and finished playback. Later PCM resumes only underrun, at the current position, without replay or another prebuffer. Completion follows accepted PCM; stale terminal events cannot affect a replacement. Inject deterministic render-progress input and cover manual pause, genuine end, delayed final PCM, and cancellation. Document the state transitions.
 
 #### B3 — Pending automatic playback overrides Pause
 
-**Validated — controllable-prebuffer probe.** Play then Pause before the automatic callback runs leaves it authorized; releasing it sets isPlaying back to true. **Paths:** [AudioPlayerManager](Sources/Managers/AudioPlayerManager.swift), [automatic playback tests](Tests/AudioPlayerManagerAutomaticPlaybackTests.swift). **Boundary/acceptance:** [B3 execution boundary](#b3-execution-boundary). **Readiness:** independent local fix; use B1-safe test execution until B1 lands.
+**Validated — controllable-prebuffer probe.** Play then Pause before the automatic callback runs leaves it authorized; releasing it sets isPlaying back to true. **Paths:** [AudioPlayerManager](Sources/Managers/AudioPlayerManager.swift), [automatic playback tests](Tests/AudioPlayerManagerAutomaticPlaybackTests.swift). **Boundary/acceptance:** [B3 execution boundary](#b3-execution-boundary). **Readiness:** independent local fix.
 
 #### B4 — A queued progress tick applies old render time after seeking
 
@@ -193,33 +189,19 @@ Finding IDs preserve the full-project review's numbering. NB22 is completed by t
 
 ## Ready for implementation
 
-These initial full boundaries are referenced from the backlog rather than duplicated there. Suggested order: B1; local B3/B4 fixes; NB19; B2 and NB9; response/credential work; settings/catalog simplification. This is priority guidance, not a phase fence. Every change needs its assigned scope.
-
-### B1 execution boundary
-
-**Intent:** every test preference read/write belongs to that test, including startup and SwiftUI. **Dependencies:** a verified isolated baseline environment while legacy tests use standard defaults. The user's ownership direction supersedes obsolete helper prescriptions.
-
-**Implementation:**
-
-1. Trace preferences through automatic hosted startup, injected factories, manager creation, Settings AppStorage, migration/retry, and every settings-touching test.
-2. Supply owned stores throughout; make the form's AppStorage use the passed store. Keep production composition on standard preferences and Keychain.
-3. Replace factory/helper snapshot-clear-restore of real preferences. Retain snapshot behavior only where it operates on an explicitly owned store.
-4. Rewrite regressions with owned sentinels/spies. Do not seed/read real settings to prove non-access or leave seeded disk-backed suites behind.
-5. Rewrite README's startup/isolation instructions with the implemented contract. Preserve session invalidation, generation revocation, drains, and late-work accounting; broader teardown simplification belongs to NB17/NB18.
-
-**Non-goals:** provider behavior, migration precedence, preference format, production credential behavior, or wholesale removal of async teardown. **Validation:** automatic hosted startup plus injected paths, form mounting/editing, migration, read/save failure, and teardown failure using owned state. Prove a second owned store's concurrent edit is untouched and no developer-domain path is reached. Apply current falsification rules and full gates in a safe environment. **Done:** no test reads, clears, overwrites, or restores developer preferences; hosted configuration is consistent across components; README agrees; assigned gates and review pass.
+These initial full boundaries are referenced from the backlog rather than duplicated there. Suggested order: local B3/B4 fixes; NB19; B2 and NB9; response/credential work; settings/catalog simplification. This is priority guidance, not a phase fence. Every change needs its assigned scope.
 
 ### B3 execution boundary
 
-**Intent:** Pause revokes the pending automatic start for its stream. **Dependencies:** no production dependency; use B1-safe test execution. **Implementation:** inspect automaticPlaybackSuppressedGeneration and make Pause's intent survive prebuffer delivery using the smallest coherent state change. **Non-goals:** prebuffer duration, underrun/end redesign, loss of explicit Resume, exact-end replay, replacement, or generation guards. **Validation:** queue a controlled start, manually play/pause, release it, and remain paused. Also prove a fresh stream starts, explicit Resume works, and stale generations cannot start. Falsify lost pause intent and over-restriction of legitimate playback. **Done:** callback cannot override Pause; focused regressions, gates, docs, and review pass.
+**Intent:** Pause revokes the pending automatic start for its stream. **Dependencies:** none. **Implementation:** inspect automaticPlaybackSuppressedGeneration and make Pause's intent survive prebuffer delivery using the smallest coherent state change. **Non-goals:** prebuffer duration, underrun/end redesign, loss of explicit Resume, exact-end replay, replacement, or generation guards. **Validation:** queue a controlled start, manually play/pause, release it, and remain paused. Also prove a fresh stream starts, explicit Resume works, and stale generations cannot start. Falsify lost pause intent and over-restriction of legitimate playback. **Done:** callback cannot override Pause; focused regressions, gates, docs, and review pass.
 
 ### B4 execution boundary
 
-**Intent:** progress uses render time and seek offset from one coherent main-thread turn. **Dependencies:** no production dependency; use B1-safe test execution. **Implementation:** enforce the documented main-owned timer contract and remove the asynchronous split between reading render time and applying progress, or establish an equally small coherent update if the affected code has changed. **Non-goals:** new concurrency framework, timer cadence/seek semantics change, or B2 repair. **Validation:** deterministic captured pre-seek tick followed by near-end seek; playback remains at the intended position. Preserve ordinary progress, Pause/Stop, real-end behavior, and timer teardown. Use completion/ownership evidence, not sleeping as a drain. **Done:** stale ticks cannot apply a new offset; regression, gates, docs, and review pass.
+**Intent:** progress uses render time and seek offset from one coherent main-thread turn. **Dependencies:** none. **Implementation:** enforce the documented main-owned timer contract and remove the asynchronous split between reading render time and applying progress, or establish an equally small coherent update if the affected code has changed. **Non-goals:** new concurrency framework, timer cadence/seek semantics change, or B2 repair. **Validation:** deterministic captured pre-seek tick followed by near-end seek; playback remains at the intended position. Preserve ordinary progress, Pause/Stop, real-end behavior, and timer teardown. Use completion/ownership evidence, not sleeping as a drain. **Done:** stale ticks cannot apply a new offset; regression, gates, docs, and review pass.
 
 ### NB19 execution boundary
 
-**Intent:** implement D1's shared owner and the ordered terminal interface B2 needs, preserving entry-point product policy. **Dependencies:** re-read final B1/B3/B4 code if landed; introduce the owner before B2.
+**Intent:** implement D1's shared owner and the ordered terminal interface B2 needs, preserving entry-point product policy. **Dependencies:** build on the landed B1 test-ownership contract and re-read final B3/B4 code if landed; introduce the owner before B2.
 
 **Implementation:**
 
@@ -233,6 +215,8 @@ These initial full boundaries are referenced from the backlog rather than duplic
 
 ## Deferred, accepted, and completed dispositions
 
+- **B1 — Fixed.** Tests own the settings storage they state; `SettingsView` binds every `@AppStorage` to the domain it is handed, and the mock-network lifecycle no longer snapshots, clears, or restores the app's own domain. Two isolation tests name the domain by identity, but no runtime test observes which domain an ordinary call site was handed, so that guarantee is held by the compiler (no settings API in `Sources` defaults to `.standard`), by `InMemoryDefaults` owning its inherited surface, and by the `process_default_settings_store` and `test_owned_settings_storage` lint rules over the named routes in `Sources` and `Tests`. README owns the current contract. NB17 and NB18 build on this ownership rather than reopening it.
+- **Accepted without change — `InMemoryDefaults`' inert domain mutators (2026-09-06).** Registration, named-domain, suite, and volatile-domain mutators succeed while doing nothing, so a future production path invoking one through an injected store would look correct under test while production mutated real state. Accepted because no production path calls them, the behavior is fail-closed for B1's isolation goal, and the lint rule refuses those calls from `Tests/`. **Revisit if** production code ever calls a domain-level `UserDefaults` member through an injected store.
 - **NB22 — Completed by this TODO rewrite:** the active backlog/decision register replaces the stale phase handoff. No implementation finding is marked fixed by this documentation change.
 - No other implementation finding has been deferred or accepted without change.
 - Legacy Tasks 14 and 36 remain withdrawn; [USER_STORIES](USER_STORIES.md) governs the fixed icon and Settings-only voice selection. This plan reinstates neither feature.

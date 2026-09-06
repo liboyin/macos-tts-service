@@ -79,7 +79,8 @@ final class TTSNetworkManagerEndpointTransportTests: MockURLProtocolTestCase {
         ]
 
         for refusal in refusals {
-            let manager = TestNetworkFactory.makeManager()
+            let defaults = makeOwnedDefaults()
+            let manager = TestNetworkFactory.makeManager(defaults: defaults)
             manager.updateSettings(
                 baseURL: refusal.endpoint,
                 apiKey: key,
@@ -100,7 +101,7 @@ final class TTSNetworkManagerEndpointTransportTests: MockURLProtocolTestCase {
                 "A refusal must not echo a user-controlled endpoint."
             )
             XCTAssertFalse(
-                SettingsKeys.allUserDefaultsKeys.contains { UserDefaults.standard.string(forKey: $0) == key },
+                SettingsKeys.allUserDefaultsKeys.contains { defaults.string(forKey: $0) == key },
                 "A refused request must not leave the key it would have carried in preferences."
             )
         }

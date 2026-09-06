@@ -47,19 +47,23 @@ final class HostedSettings {
     }
 
     private var host: NSHostingView<SettingsView>?
+    /// The store the mounted form is bound to, so `selectProvider` drives the same domain it reads.
+    private let defaults: UserDefaults
 
-    /// Mounts the form. `defaults` is the standard domain because that is the one
-    /// `MockURLProtocolTestCase` isolates and `TestNetworkFactory` hands the manager under test, so
-    /// the form retries the same migration the manager attempted; pass another domain to separate
-    /// them deliberately.
+    /// Mounts the form. `defaults` has no default value for the same reason `SettingsView`'s does
+    /// not: the form displays, writes, and migrates whichever domain it is handed, so a test states
+    /// the storage it owns and normally passes the very store it gave `TestNetworkFactory`, letting
+    /// the form retry the migration that manager attempted. Pass a second store to separate them
+    /// deliberately.
     init(networkManager: TTSNetworkManager,
          audioPlayer: AudioPlayerManager,
          secretStore: SecretStoring,
-         defaults: UserDefaults = .standard,
+         defaults: UserDefaults,
          aboutAction: AboutAction = AboutAction(),
          testCase: XCTestCase,
          file: StaticString = #filePath,
          line: UInt = #line) {
+        self.defaults = defaults
         let view = SettingsView(
             networkManager: networkManager,
             audioPlayer: audioPlayer,
@@ -162,11 +166,12 @@ final class HostedSettings {
 
     /// Switches provider the way the sidebar does, by writing the setting its selection is bound to.
     ///
-    /// The sidebar `List` is bound to `@AppStorage(SettingsKeys.ttsProvider)`, so writing that key
-    /// drives the installed view through the same binding and `onChange` production uses. The row
-    /// itself is drawn by SwiftUI and backs no AppKit control a test could select.
+    /// The sidebar `List` is bound to the form's provider `@AppStorage`, so writing that key in the
+    /// store the form was mounted with drives the installed view through the same binding and
+    /// `onChange` production uses. The row itself is drawn by SwiftUI and backs no AppKit control a
+    /// test could select.
     func selectProvider(_ provider: String, file: StaticString = #filePath, line: UInt = #line) {
-        UserDefaults.standard.set(provider, forKey: SettingsKeys.ttsProvider)
+        defaults.set(provider, forKey: SettingsKeys.ttsProvider)
         settle(file: file, line: line)
     }
 

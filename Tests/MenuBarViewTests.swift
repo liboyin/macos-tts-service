@@ -55,11 +55,13 @@ final class MenuBarViewTests: MockURLProtocolTestCase {
         // A decorative voice *label* is therefore not reachable from any hosted assertion here, and
         // was deliberately not asserted rather than asserted in a way no mutant could break. What is
         // covered is what could actually restore the feature: an offered control, and the fetch.
-        UserDefaults.standard.set("Gemini", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("Distinctive-Review-Voice", forKey: SettingsKeys.geminiVoice)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Gemini",
+            SettingsKeys.geminiVoice: "Distinctive-Review-Voice"
+        ])
         let audioPlayer = AudioPlayerManager()
         let textExtraction = TextExtractionManager(pasteboard: FakePasteboardReader())
-        let networkManager = TestNetworkFactory.makeManager()
+        let networkManager = TestNetworkFactory.makeManager(defaults: defaults)
         networkManager.updateSettings(
             baseURL: "https://generativelanguage.googleapis.com/v1beta",
             apiKey: "gemini-token",

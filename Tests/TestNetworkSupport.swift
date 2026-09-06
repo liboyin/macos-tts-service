@@ -27,8 +27,12 @@ func requestBodyData(from request: URLRequest) -> Data? {
 
 /// Creates sessions and network managers whose requests are always routed through MockURLProtocol.
 enum TestNetworkFactory {
+    /// Creates a mock-routed manager. `defaults` is fresh test-owned storage unless the caller
+    /// passes its own, so a manager reads and migrates nothing the developer configured, and a test
+    /// that must share one domain between the manager and a hosted form passes that domain here.
     static func makeManager(
         secretStore: SecretStoring = InMemorySecretStore(),
+        defaults: UserDefaults = InMemoryDefaults(),
         requestBodyEncoder: @escaping (Data) throws -> Data = { $0 },
         audioDeliveryQueue: DispatchQueue = DispatchQueue(label: "com.clipboardtts.tests.audiodelivery"),
         callbackAuthority: CallbackAuthorityLocking = RecursiveCallbackAuthority()
@@ -40,7 +44,7 @@ enum TestNetworkFactory {
             sessionCreated: { MockURLProtocol.register(session: $0, forTestIdentifier: testIdentifier) },
             sessionInvalidated: { MockURLProtocol.sessionDidInvalidate($0, forTestIdentifier: testIdentifier) },
             secretStore: secretStore,
-            defaults: .standard,
+            defaults: defaults,
             requestBodyEncoder: requestBodyEncoder,
             audioDeliveryQueue: audioDeliveryQueue,
             callbackAuthority: callbackAuthority
@@ -115,20 +119,12 @@ class MockURLProtocolTestCase: XCTestCase {
     private static let testExecutionGateDepthKey = "com.clipboardtts.tests.mockurlprotocol.gatedepth"
     static let testExecutionLock = NSRecursiveLock()
     private var testIdentifier: String?
-    private var settingsSnapshot: UserDefaultsSnapshot?
     private var acquiredTestExecutionGate = false
-    private var teardownRecovery: DispatchSemaphore?
     private var postQuiescenceAssertions: [() -> Void] = []
 
     /// Queues an assertion that runs after the mock scope has revoked and drained owned delivery work.
     func assertAfterMockQuiescence(_ assertion: @escaping () -> Void) {
         postQuiescenceAssertions.append(assertion)
-    }
-
-    /// Waits for timeout recovery when a nested test scope owns the mock-test gate.
-    func waitForSettingsRestorationAfterTeardown() {
-        teardownRecovery?.wait()
-        teardownRecovery = nil
     }
 
     override func setUp() {
@@ -137,15 +133,11 @@ class MockURLProtocolTestCase: XCTestCase {
         acquiredTestExecutionGate = MockURLProtocolTestCase.enterTestExecutionGate()
         testIdentifier = MockURLProtocol.beginTest()
         MockURLProtocol.reset()
-        settingsSnapshot = UserDefaultsSnapshot(keys: SettingsKeys.allUserDefaultsKeys)
-        SettingsKeys.allUserDefaultsKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
     }
 
     override func tearDown() {
         guard let testIdentifier else {
             XCTFail("MockURLProtocol test scope was not created.")
-            settingsSnapshot?.restore()
-            settingsSnapshot = nil
             MockURLProtocolTestCase.leaveTestExecutionGate()
             MockURLProtocolTestCase.testExecutionLock.unlock()
             super.tearDown()
@@ -163,15 +155,10 @@ class MockURLProtocolTestCase: XCTestCase {
             unhandledRequests.expectedUnhandledRequestCount,
             "Unexpected mock-routed request without an installed handler."
         )
-        let capturedSettingsSnapshot = self.settingsSnapshot
-        self.settingsSnapshot = nil
         if unhandledRequests.didQuiesce {
             postQuiescenceAssertions.forEach { $0() }
-            capturedSettingsSnapshot?.restore()
             MockURLProtocolTestCase.leaveTestExecutionGate()
         } else {
-            let recovery = DispatchSemaphore(value: 0)
-            teardownRecovery = recovery
             if acquiredTestExecutionGate {
                 MockURLProtocolTestCase.abandonTestExecutionGateUntilRecovery()
             } else {
@@ -180,8 +167,6 @@ class MockURLProtocolTestCase: XCTestCase {
             let shouldReleaseGateAfterRecovery = acquiredTestExecutionGate
             DispatchQueue.global(qos: .userInitiated).async {
                 MockURLProtocolTestCase.finishClosingScopeOrEndRun(identifier: testIdentifier)
-                capturedSettingsSnapshot?.restore()
-                recovery.signal()
                 if shouldReleaseGateAfterRecovery {
                     MockURLProtocolTestCase.testExecutionGate.signal()
                 }
@@ -195,9 +180,9 @@ class MockURLProtocolTestCase: XCTestCase {
 
     /// Finishes a closing scope, ending the run when the recovery bound expires instead.
     ///
-    /// Every caller is about to restore the developer's settings or release the mock-test gate, and
-    /// a scope that did not quiesce still owns work that can deliver into whatever runs next: there
-    /// is nothing safe to hand the following test, so the run ends where the cause is still visible.
+    /// Every caller is about to release the mock-test gate, and a scope that did not quiesce still
+    /// owns work that can deliver into whatever runs next: there is nothing safe to hand the
+    /// following test, so the run ends where the cause is still visible.
     /// Use `MockURLProtocol.finishClosingTestWhenQuiescent` directly only to observe that bound.
     static func finishClosingScopeOrEndRun(identifier: String) {
         guard MockURLProtocol.finishClosingTestWhenQuiescent(identifier: identifier) else {
@@ -205,8 +190,8 @@ class MockURLProtocolTestCase: XCTestCase {
                 """
                 Mock test scope \(identifier) did not quiesce within the recovery bound: session, \
                 protocol-load, manager-construction, delivery-revocation, or delivery-queue work is \
-                still outstanding. Settings stay unrestored and the mock-test gate stays closed \
-                rather than hand a live callback owner to the next test.
+                still outstanding. The mock-test gate stays closed rather than hand a live \
+                callback owner to the next test.
                 """
             )
         }
@@ -245,70 +230,11 @@ class MockURLProtocolTestCase: XCTestCase {
     }
 }
 
-final class MockURLProtocolSettingsIsolationTests: MockURLProtocolTestCase {
-    private var seededValues: [String: String] = [:]
-
-    override func invokeTest() {
-        // WHY: This runs before the inherited per-test setup, letting the test seed the real
-        // defaults domain exactly as a developer installation might. The recursive test lock
-        // makes that short pre-setup interval exclusive with every other mock-network test.
-        let acquiredTestExecutionGate = MockURLProtocolTestCase.enterTestExecutionGate()
-        MockURLProtocolTestCase.testExecutionLock.lock()
-        let developerSnapshot = UserDefaultsSnapshot(keys: SettingsKeys.allUserDefaultsKeys)
-        defer {
-            developerSnapshot.restore()
-            MockURLProtocolTestCase.testExecutionLock.unlock()
-            if acquiredTestExecutionGate {
-                MockURLProtocolTestCase.leaveTestExecutionGate()
-            }
-        }
-
-        seededValues = Dictionary(
-            uniqueKeysWithValues: SettingsKeys.allUserDefaultsKeys.enumerated().compactMap { index, key in
-                guard index.isMultiple(of: 2) || key == SettingsKeys.legacyOpenAIAPIKey else { return nil }
-                return (key, "developer-value-\(key)")
-            }
-        )
-        SettingsKeys.allUserDefaultsKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
-        seededValues.forEach { key, value in
-            UserDefaults.standard.set(value, forKey: key)
-        }
-
-        super.invokeTest()
-        waitForSettingsRestorationAfterTeardown()
-
-        for key in SettingsKeys.allUserDefaultsKeys {
-            XCTAssertEqual(
-                UserDefaults.standard.string(forKey: key),
-                seededValues[key],
-                "The mock-network lifecycle must restore \(key) after the test finishes."
-            )
-        }
-    }
-
-    func testManagerStartupCannotMigrateSeededSettingsOutsideTheMockTestScope() {
-        // WHY: Manager startup always invokes legacy-key migration. It must see the isolated
-        // defaults domain, so that the test cannot migrate or delete a developer's plaintext key.
-        _ = TestNetworkFactory.makeManager()
-        for key in SettingsKeys.allUserDefaultsKeys {
-            XCTAssertNil(UserDefaults.standard.object(forKey: key), "\(key) should be isolated during the test.")
-        }
-        assertAfterMockQuiescence {
-            for key in SettingsKeys.allUserDefaultsKeys {
-                XCTAssertNil(
-                    UserDefaults.standard.object(forKey: key),
-                    "\(key) must remain isolated until mock sessions and loads are quiescent."
-                )
-            }
-        }
-    }
-}
-
 final class MockURLProtocolConstructionTests: XCTestCase {
     func testClosingScopeWaitsForManagerInitializationBeforeItCanQuiesce() {
         // WHY: TTSNetworkManager reads and migrates settings before it registers its URLSession.
-        // Treating that interval as quiescent would restore developer settings while migration is
-        // still active, letting the late initializer mutate them after teardown.
+        // Treating that interval as quiescent would release the mock-test gate while migration is
+        // still active, letting the late initializer run inside the next test's scope.
         MockURLProtocolTestCase.testExecutionLock.lock()
         let acquiredTestExecutionGate = MockURLProtocolTestCase.enterTestExecutionGate()
         defer {
@@ -323,7 +249,7 @@ final class MockURLProtocolConstructionTests: XCTestCase {
 
         let endResult = MockURLProtocol.endTest(identifier: testIdentifier, timeout: 0)
 
-        XCTAssertFalse(endResult.didQuiesce, "An initializing manager must keep settings restoration blocked.")
+        XCTAssertFalse(endResult.didQuiesce, "An initializing manager must keep its scope from closing.")
         MockURLProtocol.managerConstructionDidFinish(forTestIdentifier: testIdentifier)
         MockURLProtocolTestCase.finishClosingScopeOrEndRun(identifier: testIdentifier)
     }

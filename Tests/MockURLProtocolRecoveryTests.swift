@@ -8,8 +8,8 @@ import XCTest
 /// may take, and what it may leave behind, once the tearing-down thread has already given up.
 final class MockURLProtocolRecoveryTests: XCTestCase {
     func testRecoveryStopsWaitingForARevocationThatNeverReturns() {
-        // WHY: Recovery holds the mock-test gate closed and the developer's settings isolated while
-        // it waits, and the release it waits for calls a client handler. Waiting without a bound
+        // WHY: Recovery holds the mock-test gate closed while it waits, and the release it waits
+        // for calls a client handler. Waiting without a bound
         // turned a handler that never returns into a suite that hangs in a later test's gate
         // acquisition, where nothing points back at the scope that caused it.
         MockURLProtocolTestCase.testExecutionLock.lock()
@@ -79,7 +79,6 @@ final class MockURLProtocolRecoveryTests: XCTestCase {
         // the finished test asserted — inside whichever test is running by then.
         MockURLProtocolTestCase.testExecutionLock.lock()
         let acquiredTestExecutionGate = MockURLProtocolTestCase.enterTestExecutionGate()
-        isolateAppSettingsDefaults()
         var activeTestIdentifier: String?
         defer {
             if let activeTestIdentifier {
@@ -134,11 +133,10 @@ final class MockURLProtocolRecoveryTests: XCTestCase {
     }
 
     func testBackgroundDeliveryRevocationDoesNotWaitForTheMainThread() {
-        // WHY: Timeout recovery runs off-main while the settings-isolation wrapper can be
-        // waiting on the main thread. Revocation must advance callback authority without a cycle.
+        // WHY: Timeout recovery runs off-main while the tearing-down thread can be waiting on the
+        // main thread. Revocation must advance callback authority without a cycle.
         MockURLProtocolTestCase.testExecutionLock.lock()
         let acquiredTestExecutionGate = MockURLProtocolTestCase.enterTestExecutionGate()
-        isolateAppSettingsDefaults()
         var activeTestIdentifier: String?
         let audioDeliveryQueue = DispatchQueue(label: "com.clipboardtts.tests.background-revocation")
         let releaseDelivery = DispatchSemaphore(value: 0)

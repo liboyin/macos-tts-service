@@ -174,7 +174,7 @@ struct APIKeyMigrationService {
     let secretStore: SecretStoring
 
     /// Moves every non-empty legacy key to the secret store and reports what it secured and kept.
-    func migrateLegacyAPIKeys(defaults: UserDefaults = .standard) -> APIKeyMigrationOutcome {
+    func migrateLegacyAPIKeys(defaults: UserDefaults) -> APIKeyMigrationOutcome {
         var outcome = APIKeyMigrationOutcome()
         for provider in APIKeyProvider.allCases {
             guard let legacySecret = defaults.string(forKey: provider.legacyUserDefaultsKey) else {
@@ -226,7 +226,7 @@ struct APIKeyStartupState {
     /// Migrates a legacy key before reading the selected provider's current saved key.
     static func load(selectedProvider: String,
                      secretStore: SecretStoring,
-                     defaults: UserDefaults = .standard) -> APIKeyStartupState {
+                     defaults: UserDefaults) -> APIKeyStartupState {
         let migrationFailures = APIKeyMigrationService(secretStore: secretStore)
             .migrateLegacyAPIKeys(defaults: defaults)
             .pendingProviders

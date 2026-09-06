@@ -114,7 +114,7 @@ final class TTSNetworkManager: NSObject, ObservableObject, URLSessionDataDelegat
          sessionCreated: ((URLSession) -> Void)? = nil,
          sessionInvalidated: ((URLSession) -> Void)? = nil,
          secretStore: SecretStoring = KeychainSecretStore(),
-         defaults: UserDefaults = .standard,
+         defaults: UserDefaults,
          requestBodyEncoder: @escaping (Data) throws -> Data = { $0 },
          audioDeliveryQueue: DispatchQueue = DispatchQueue(label: "com.clipboardtts.ttsaudiodelivery"),
          callbackAuthority: CallbackAuthorityLocking = RecursiveCallbackAuthority()) {

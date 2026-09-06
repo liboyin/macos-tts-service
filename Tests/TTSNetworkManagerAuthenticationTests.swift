@@ -8,10 +8,12 @@ final class TTSNetworkManagerAuthenticationTests: MockURLProtocolTestCase {
         let store = InMemorySecretStore()
         try store.saveSecret("test-openai-api-key", for: .openAI)
         try store.saveSecret("test-custom-api-key", for: .custom)
-        UserDefaults.standard.set("Unexpected", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("https://custom.example/v1/audio/speech", forKey: SettingsKeys.apiBaseURL)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Unexpected",
+            SettingsKeys.apiBaseURL: "https://custom.example/v1/audio/speech"
+        ])
 
-        let manager = TestNetworkFactory.makeManager(secretStore: store)
+        let manager = TestNetworkFactory.makeManager(secretStore: store, defaults: defaults)
         let requestEmitted = expectation(description: "A normalized OpenAI request is emitted")
         MockURLProtocol.installRequestHandler { request in
             XCTAssertEqual(request.url?.absoluteString, "https://api.openai.com/v1/audio/speech")
@@ -35,11 +37,13 @@ final class TTSNetworkManagerAuthenticationTests: MockURLProtocolTestCase {
         let store = InMemorySecretStore()
         try store.saveSecret("test-openai-api-key", for: .openAI)
         try store.saveSecret("test-custom-api-key", for: .custom)
-        UserDefaults.standard.set("Unexpected", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("https://custom.example/v1/audio/speech", forKey: SettingsKeys.apiBaseURL)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Unexpected",
+            SettingsKeys.apiBaseURL: "https://custom.example/v1/audio/speech"
+        ])
 
         let audioPlayer = AudioPlayerManager()
-        let manager = TestNetworkFactory.makeManager(secretStore: store)
+        let manager = TestNetworkFactory.makeManager(secretStore: store, defaults: defaults)
         let requestEmitted = expectation(description: "Settings uses a normalized OpenAI request")
         MockURLProtocol.installRequestHandler { request in
             let url = request.url?.absoluteString ?? ""
@@ -59,6 +63,7 @@ final class TTSNetworkManagerAuthenticationTests: MockURLProtocolTestCase {
             networkManager: manager,
             audioPlayer: audioPlayer,
             secretStore: store,
+            defaults: defaults,
             testCase: self
         )
 
@@ -73,7 +78,8 @@ final class TTSNetworkManagerAuthenticationTests: MockURLProtocolTestCase {
         // to erase the warning even though the user's new key was never saved.
         let store = InMemorySecretStore()
         try store.saveSecret("test-original-custom-key", for: .custom)
-        let secretState = SettingsSecretState(secretStore: store, defaults: .standard)
+        let defaults = makeOwnedDefaults()
+        let secretState = SettingsSecretState(secretStore: store, defaults: defaults)
         store.nextError = .unavailable
 
         secretState.saveSecret("test-new-custom-key", for: .custom)
@@ -89,11 +95,13 @@ final class TTSNetworkManagerAuthenticationTests: MockURLProtocolTestCase {
         // WHY: The warning is the app's own claim that a saved key is still sitting in preferences.
         // Leaving it up after the user's retry secured every one of them would send them back to a
         // Keychain problem they already solved.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("test-legacy-custom-key", forKey: SettingsKeys.legacyCustomAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.legacyCustomAPIKey: "test-legacy-custom-key"
+        ])
         let store = InMemorySecretStore()
         store.nextError = .unavailable
-        let manager = TestNetworkFactory.makeManager(secretStore: store)
+        let manager = TestNetworkFactory.makeManager(secretStore: store, defaults: defaults)
         XCTAssertEqual(manager.lastError, APIKeyMigrationService.failureMessage(for: .custom))
 
         manager.updateMigrationFailureWarning(for: nil)
@@ -105,11 +113,13 @@ final class TTSNetworkManagerAuthenticationTests: MockURLProtocolTestCase {
         // WHY: Migration guidance and request failures share one menu-bar channel. Securing a key
         // resolves nothing about a request that failed afterwards, so withdrawing the warning must
         // not silence the guidance the user still needs to make the app speak.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("test-legacy-custom-key", forKey: SettingsKeys.legacyCustomAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.legacyCustomAPIKey: "test-legacy-custom-key"
+        ])
         let store = InMemorySecretStore()
         store.nextError = .unavailable
-        let manager = TestNetworkFactory.makeManager(secretStore: store)
+        let manager = TestNetworkFactory.makeManager(secretStore: store, defaults: defaults)
         XCTAssertEqual(manager.lastError, APIKeyMigrationService.failureMessage(for: .custom))
         let requestFailure = "The TTS endpoint must use HTTPS unless it runs on localhost. Update Settings and try again."
         manager.updateSettings(
@@ -138,7 +148,8 @@ final class TTSNetworkManagerAuthenticationTests: MockURLProtocolTestCase {
         ]
 
         for provider in providers {
-            let manager = TestNetworkFactory.makeManager()
+            let defaults = makeOwnedDefaults()
+            let manager = TestNetworkFactory.makeManager(defaults: defaults)
             let token = provider.value.replacingOccurrences(of: "Bearer ", with: "")
             manager.updateSettings(
                 baseURL: provider.baseURL,
@@ -165,7 +176,7 @@ final class TTSNetworkManagerAuthenticationTests: MockURLProtocolTestCase {
 
             manager.streamTTS(text: "Verify \(provider.name) authentication") { _ in }
             wait(for: [requestEmitted], timeout: 2.0)
-            XCTAssertFalse(SettingsKeys.allUserDefaultsKeys.contains { UserDefaults.standard.string(forKey: $0) == token })
+            XCTAssertFalse(SettingsKeys.allUserDefaultsKeys.contains { defaults.string(forKey: $0) == token })
         }
     }
 }

@@ -12,12 +12,14 @@ final class SettingsViewTests: MockURLProtocolTestCase {
         // WHY: Only Custom PCM may use a user override. Switching away must reset the live graph
         // to the documented provider format so a later OpenAI or Gemini response is never decoded
         // at the previous Custom rate.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set(48_000.0, forKey: SettingsKeys.customSampleRate)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.customSampleRate: 48_000.0
+        ])
 
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         // Selecting OpenAI also fetches its model and voice suggestions.
         MockURLProtocol.installRequestHandler { request in
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
@@ -27,6 +29,7 @@ final class SettingsViewTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -41,12 +44,14 @@ final class SettingsViewTests: MockURLProtocolTestCase {
     func testInvalidCustomSampleRateIsReportedWithoutStartingTestVoice() {
         // WHY: The Settings field must refuse invalid PCM rates before a Test Voice request can
         // stream bytes into an unchanged graph, and its established error is rendered inline.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set(48_001.0, forKey: SettingsKeys.customSampleRate)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.customSampleRate: 48_001.0
+        ])
 
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         MockURLProtocol.installRequestHandler { _ in
             XCTFail("An invalid PCM rate must not start Test Voice")
             return (HTTPURLResponse(), Data())
@@ -55,6 +60,7 @@ final class SettingsViewTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -69,22 +75,25 @@ final class SettingsViewTests: MockURLProtocolTestCase {
     func testInvalidCustomSampleRateEditKeepsTheLastKnownGoodPersistedValue() {
         // WHY: A malformed draft must remain visible for correction without becoming startup
         // configuration. Otherwise a relaunch could silently decode Custom PCM at the default rate.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set(24_000.0, forKey: SettingsKeys.customSampleRate)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.customSampleRate: 24_000.0
+        ])
 
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         let settings = HostedSettings(
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
         settings.type("48001", into: .customSampleRate, expecting: "24000")
 
-        XCTAssertEqual(UserDefaults.standard.double(forKey: SettingsKeys.customSampleRate), 24_000)
+        XCTAssertEqual(defaults.double(forKey: SettingsKeys.customSampleRate), 24_000)
         XCTAssertFalse(audioPlayer.hasValidSampleRateConfiguration)
         XCTAssertEqual(audioPlayer.sampleRateError, "PCM sample rate must be a finite value from 8,000 to 48,000 Hz.")
         settings.release()
@@ -94,10 +103,12 @@ final class SettingsViewTests: MockURLProtocolTestCase {
         // WHY: A visible invalid draft must remain the active validation state until corrected.
         // Otherwise a later sync could silently recover the saved 24-kHz graph and speak despite
         // the field still showing a Custom format the app refuses to decode.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom"
+        ])
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         MockURLProtocol.installRequestHandler { _ in
             XCTFail("An invalid Custom PCM draft must not start Test Voice")
             return (HTTPURLResponse(), Data())
@@ -106,6 +117,7 @@ final class SettingsViewTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -130,7 +142,8 @@ final class SettingsViewTests: MockURLProtocolTestCase {
         // request that cannot play.
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager(engineStarter: { _ in throw EngineStartFailure.failed })
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let defaults = makeOwnedDefaults()
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         // Opening Settings on OpenAI fetches its model and voice suggestions, so only a request to
         // the speech endpoint would mean Test Voice ignored the stopped graph.
         MockURLProtocol.installRequestHandler { request in
@@ -146,6 +159,7 @@ final class SettingsViewTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -160,17 +174,19 @@ final class SettingsViewTests: MockURLProtocolTestCase {
     func testCustomTestVoiceEmitsConfiguredOpenAICompatiblePayload() {
         // WHY: Test Voice must synchronize persisted Custom settings into the production request
         // path, so an endpoint test proves the same model/voice contract as normal speech.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("test-custom-key", forKey: SettingsKeys.legacyCustomAPIKey)
-        UserDefaults.standard.set("https://custom.api/v1/audio/speech", forKey: SettingsKeys.apiBaseURL)
-        UserDefaults.standard.set("custom-model", forKey: SettingsKeys.customModel)
-        UserDefaults.standard.set("custom-voice", forKey: SettingsKeys.customVoice)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.legacyCustomAPIKey: "test-custom-key",
+            SettingsKeys.apiBaseURL: "https://custom.api/v1/audio/speech",
+            SettingsKeys.customModel: "custom-model",
+            SettingsKeys.customVoice: "custom-voice"
+        ])
 
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
         // Constructing the manager first migrates the legacy plaintext key into the store, which is
         // where the form then reads it.
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
 
         let requestEmitted = expectation(description: "Custom Test Voice request is emitted")
         MockURLProtocol.installRequestHandler { request in
@@ -190,6 +206,7 @@ final class SettingsViewTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -203,14 +220,16 @@ final class SettingsViewTests: MockURLProtocolTestCase {
         // WHY: Test Voice must use the same Custom validation as clipboard and Services speech.
         // Otherwise a test action could contact an endpoint with a configuration normal speech
         // correctly rejects, making Settings appear to work while it uses a different contract.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("https://custom.api/v1/audio/speech", forKey: SettingsKeys.apiBaseURL)
-        UserDefaults.standard.set("\n\t ", forKey: SettingsKeys.customModel)
-        UserDefaults.standard.set("custom-voice", forKey: SettingsKeys.customVoice)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.apiBaseURL: "https://custom.api/v1/audio/speech",
+            SettingsKeys.customModel: "\n\t ",
+            SettingsKeys.customVoice: "custom-voice"
+        ])
 
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         MockURLProtocol.installRequestHandler { _ in
             XCTFail("Invalid Custom Test Voice configuration must not contact the endpoint")
             return (HTTPURLResponse(), Data())
@@ -219,6 +238,7 @@ final class SettingsViewTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -235,15 +255,17 @@ final class SettingsViewTests: MockURLProtocolTestCase {
         // WHY: Settings is where the Custom endpoint is typed, so Test Voice is the first action
         // that would send the saved key to it. It must refuse cleartext with the same message and
         // the same no-request outcome as clipboard and Services speech.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("test-custom-key", forKey: SettingsKeys.legacyCustomAPIKey)
-        UserDefaults.standard.set("http://custom.api/v1/audio/speech", forKey: SettingsKeys.apiBaseURL)
-        UserDefaults.standard.set("custom-model", forKey: SettingsKeys.customModel)
-        UserDefaults.standard.set("custom-voice", forKey: SettingsKeys.customVoice)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.legacyCustomAPIKey: "test-custom-key",
+            SettingsKeys.apiBaseURL: "http://custom.api/v1/audio/speech",
+            SettingsKeys.customModel: "custom-model",
+            SettingsKeys.customVoice: "custom-voice"
+        ])
 
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         MockURLProtocol.installRequestHandler { _ in
             XCTFail("A cleartext Custom endpoint must not be contacted")
             return (HTTPURLResponse(), Data())
@@ -252,6 +274,7 @@ final class SettingsViewTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -273,7 +296,8 @@ final class SettingsViewTests: MockURLProtocolTestCase {
         let secretStore = InMemorySecretStore()
         try secretStore.saveSecret("test-gemini-api-key", for: .gemini)
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let defaults = makeOwnedDefaults()
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
 
         let requestEmitted = expectation(description: "Test Voice reaches the newly selected Gemini endpoint")
         MockURLProtocol.installRequestHandler { request in
@@ -293,6 +317,7 @@ final class SettingsViewTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -309,15 +334,17 @@ final class SettingsViewTests: MockURLProtocolTestCase {
         // view does — would re-read storage instead of retaining the edit, so a later action could
         // speak with a key the user never typed here. Changing the store behind the form is what
         // separates the retained object from one rebuilt on demand.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("https://custom.api/v1/audio/speech", forKey: SettingsKeys.apiBaseURL)
-        UserDefaults.standard.set("custom-model", forKey: SettingsKeys.customModel)
-        UserDefaults.standard.set("custom-voice", forKey: SettingsKeys.customVoice)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.apiBaseURL: "https://custom.api/v1/audio/speech",
+            SettingsKeys.customModel: "custom-model",
+            SettingsKeys.customVoice: "custom-voice"
+        ])
 
         let secretStore = InMemorySecretStore()
         try secretStore.saveSecret("test-stored-key", for: .custom)
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
 
         let requestEmitted = expectation(description: "Test Voice uses the key retained by the form")
         MockURLProtocol.installRequestHandler { request in
@@ -330,6 +357,7 @@ final class SettingsViewTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 

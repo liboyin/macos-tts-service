@@ -2,13 +2,11 @@ import XCTest
 @testable import ClipboardTTSApp
 
 final class MockURLProtocolAudioScopeTests: XCTestCase {
-    func testClosingScopeRevokesBlockedAudioDeliveryBeforeRestoringSettingsOrStartingNextScope() {
+    func testClosingScopeRevokesBlockedAudioDeliveryBeforeClosingItOrStartingTheNextScope() {
         // WHY: A URL-session drain alone cannot prove that a handler queued behind a blocked
-        // delivery queue will not escape into restored developer settings or a later test scope.
+        // delivery queue will not escape into a later test scope.
         MockURLProtocolTestCase.testExecutionLock.lock()
         let acquiredTestExecutionGate = MockURLProtocolTestCase.enterTestExecutionGate()
-        isolateAppSettingsDefaults()
-        var scopeSettings: UserDefaultsSnapshot?
         var activeTestIdentifier: String?
         let audioDeliveryQueue = DispatchQueue(label: "com.clipboardtts.tests.scope-owned-delivery")
         let releaseDelivery = DispatchSemaphore(value: 0)
@@ -22,16 +20,12 @@ final class MockURLProtocolAudioScopeTests: XCTestCase {
                     MockURLProtocolTestCase.finishClosingScopeOrEndRun(identifier: activeTestIdentifier)
                 }
             }
-            scopeSettings?.restore()
             if acquiredTestExecutionGate {
                 MockURLProtocolTestCase.leaveTestExecutionGate()
             }
             MockURLProtocolTestCase.testExecutionLock.unlock()
         }
 
-        UserDefaults.standard.set("developer-model", forKey: SettingsKeys.openAIModel)
-        scopeSettings = UserDefaultsSnapshot(keys: [SettingsKeys.openAIModel])
-        UserDefaults.standard.removeObject(forKey: SettingsKeys.openAIModel)
         activeTestIdentifier = MockURLProtocol.beginTest()
 
         let deliveryBlocked = expectation(description: "Owned audio delivery queue is blocked")
@@ -80,25 +74,19 @@ final class MockURLProtocolAudioScopeTests: XCTestCase {
         }
         let endResult = MockURLProtocol.endTest(identifier: testIdentifier, timeout: 0.2)
         activeTestIdentifier = nil
-        XCTAssertFalse(endResult.didQuiesce, "A blocked owned delivery queue must delay settings restoration.")
-        XCTAssertNil(UserDefaults.standard.object(forKey: SettingsKeys.openAIModel))
+        XCTAssertFalse(endResult.didQuiesce, "A blocked owned delivery queue must keep the scope from closing.")
 
-        let settingsRestored = expectation(description: "Settings restore after owned delivery drains")
-        // Capture the snapshot itself rather than the `var` the deferred block also reads, so the
-        // recovery below shares an immutable value instead of that variable.
-        let capturedScopeSettings = scopeSettings
+        let scopeClosed = expectation(description: "Scope closes after owned delivery drains")
         DispatchQueue.global(qos: .userInitiated).async {
             MockURLProtocolTestCase.finishClosingScopeOrEndRun(identifier: testIdentifier)
-            capturedScopeSettings?.restore()
-            settingsRestored.fulfill()
+            scopeClosed.fulfill()
         }
         releaseDelivery.signal()
-        wait(for: [settingsRestored], timeout: 1.0)
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.openAIModel), "developer-model")
+        wait(for: [scopeClosed], timeout: 1.0)
 
         activeTestIdentifier = MockURLProtocol.beginTest()
         audioDeliveryQueue.sync {}
-        XCTAssertFalse(callbackRan.value, "A revoked handler must not run after settings restoration or in the next test scope.")
+        XCTAssertFalse(callbackRan.value, "A revoked handler must not run once its scope closed, nor in the next test scope.")
         let nextScopeEndResult = MockURLProtocol.endTest(identifier: activeTestIdentifier!, timeout: 1.0)
         XCTAssertTrue(nextScopeEndResult.didQuiesce)
         activeTestIdentifier = nil
@@ -176,7 +164,6 @@ final class MockURLProtocolAudioScopeTests: XCTestCase {
         // this test's post-quiescence assertions just read.
         MockURLProtocolTestCase.testExecutionLock.lock()
         let acquiredTestExecutionGate = MockURLProtocolTestCase.enterTestExecutionGate()
-        isolateAppSettingsDefaults()
         let audioDeliveryQueue = DispatchQueue(label: "com.clipboardtts.tests.quiesced-scope-delivery")
         let releaseResponse = DispatchSemaphore(value: 0)
         var activeTestIdentifier: String?
@@ -194,9 +181,6 @@ final class MockURLProtocolAudioScopeTests: XCTestCase {
             MockURLProtocolTestCase.testExecutionLock.unlock()
         }
 
-        UserDefaults.standard.set("developer-voice", forKey: SettingsKeys.openAIVoice)
-        let scopeSettings = UserDefaultsSnapshot(keys: [SettingsKeys.openAIVoice])
-        UserDefaults.standard.removeObject(forKey: SettingsKeys.openAIVoice)
         activeTestIdentifier = MockURLProtocol.beginTest()
 
         let manager = TestNetworkFactory.makeManager(audioDeliveryQueue: audioDeliveryQueue)
@@ -235,8 +219,6 @@ final class MockURLProtocolAudioScopeTests: XCTestCase {
         activeTestIdentifier = nil
         XCTAssertTrue(endResult.didQuiesce, "A scope whose delivery is not blocked must drain inside its deadline.")
         XCTAssertEqual(manager.lastError, terminalError, "Teardown must preserve the terminal error it revoked around.")
-        scopeSettings.restore()
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.openAIVoice), "developer-voice")
 
         let mainQueueDrained = expectation(description: "Main queue drained after the scope closed")
         DispatchQueue.main.async { mainQueueDrained.fulfill() }

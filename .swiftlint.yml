@@ -28,3 +28,65 @@ type_body_length:
 # TTSNetworkManager nests its decodable response model one extra level, which reads fine.
 nesting:
   type_level: 2
+
+# B1's guarantee has almost no runtime owner: a behavioural assertion passes whichever domain the
+# code under test was given, because what it checks is the behaviour, not the domain. Two isolation
+# tests do name the domain — comparing owned storage and the hosted startup graph against it by
+# identity — but nothing observes the domain an ordinary call site was handed. These two rules are
+# the backstop for that gap.
+#
+# The first covers Sources as well as Tests, because the credential-leak regressions now scan the
+# store the manager was given rather than the process domain: a `Sources` write straight to
+# `.standard` would escape them. Covering both directories makes the process domain reachable from
+# exactly one place in production — `AppStartupDependencies.make`, the composition root, which
+# carries the only Sources-side disables — so any other route there fails the gate instead. Tests
+# carry their own line-scoped disables for the deliberate identity and shared-state probes that have
+# to name what they are proving stayed clean. `.standard` is matched bare rather than only
+# after `UserDefaults`, because the contextual spellings (`let store: UserDefaults = .standard`, the
+# same value passed as an argument or returned from a closure) are ordinary Swift, not obfuscation,
+# and no regex can follow an alias afterwards. A future unrelated `.standard` needs an explicit
+# disable saying why.
+#
+# The second is Tests-only, because both of its spellings are legitimate in production: a view binds
+# `@AppStorage` to the process store by design, and a manager calls `super.init()` as an `NSObject`.
+# In a test they are the two remaining ways to reach that domain without naming it. Both are matched
+# broadly rather than by their obvious spelling, because the narrow forms are trivially sidestepped
+# by ordinary Swift: `@AppStorage private var x: String` initialized later through
+# `AppStorage(wrappedValue:_:)` binds the process store without ever writing `@AppStorage(`;
+# `@SwiftUI.AppStorage(...)` and a directly constructed `AppStorage(...)` do the same without the
+# attribute; and `super . init(suiteName : someOptional)` reaches the default search list without
+# either `nil` or the usual spacing, on either side of the colon. So the bare type name `AppStorage` is refused anywhere in
+# `Tests/`, as is every superclass suite construction however it is spaced, and the one reviewed
+# construction — `InMemoryDefaults`' own unique, non-optional suite — carries a disable.
+#
+# Both are regexes over known routes, so they stop a habit being reintroduced, not a determined
+# author: a comment spliced mid-expression, or a contextual `.init()` whose type is only visible
+# to the compiler, still gets through. `suiteName: nil` is called out by name because the SDK
+# documents it as the default search list — the app's own — so it is the one spelling that
+# looks like isolation while providing none. The guarantee that does not depend on either rule
+# is the compiler's, and it carries the two cases a regex cannot: no settings API in Sources
+# defaults to `.standard`, so an omitted store fails to build, and `InMemoryDefaults` holds a stored
+# property with no default value, so deleting the initializer that names its unique suite fails to
+# build rather than inheriting `UserDefaults.init()` — Foundation's `init(suiteName: nil)`.
+custom_rules:
+  process_default_settings_store:
+    name: "Process Default Settings Store"
+    included: ".*/(Sources|Tests)/.*\\.swift"
+    regex: "\\.\\s*`?standard\\b|UserDefaults\\s*\\.\\s*`?init|(?<![A-Za-z0-9_])UserDefaults\\s*\\(|:\\s*UserDefaults\\s*=\\s*\\.init|(?<![\\w.])defaults:\\s*\\(?\\s*\\.init\\b|NSUserDefaultsController|CFPreferences|\\.register\\(defaults:|\\.(set|remove)?[PpVv](ersistent|olatile)Domain\\(|\\.(volatile|persistent)DomainNames|\\.objectIsForced\\(|\\.(add|remove)Suite\\(|suiteName\\s*:\\s*nil"
+    excluded_match_kinds:
+      - comment
+      - doccomment
+      - string
+    message: "The process defaults domain is the installed app's own; reach it only at the composition root, and state settings in tests through storage they own (makeOwnedDefaults)."
+    severity: error
+
+  test_owned_settings_storage:
+    name: "Test Owned Settings Storage"
+    included: ".*/Tests/.*\\.swift"
+    regex: "\\bAppStorage\\b|super\\s*\\.\\s*init\\s*\\(\\s*\\)|super\\s*\\.\\s*init\\s*\\(\\s*suiteName\\s*:"
+    excluded_match_kinds:
+      - comment
+      - doccomment
+      - string
+    message: "A test-local @AppStorage can bind the process defaults store even when declared without a key, and a UserDefaults subclass reaches the default search list through super.init() or a nil suite name; use makeOwnedDefaults instead, or disable this rule on the one line with a reason."
+    severity: error

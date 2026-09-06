@@ -26,8 +26,14 @@ struct AppStartupDependencies {
     /// Builds production dependencies or an entirely test-owned hosted-test dependency graph.
     static func make(
         isHostedTest: Bool = HostedTestProcess.isActive,
+        // This is the composition root, and these two lines are the only place in the app that
+        // names a defaults domain rather than being handed one. Everything downstream requires an
+        // explicit store, which is what keeps the installed app's own preferences out of reach of
+        // a test and out of reach of any later `Sources` code that would otherwise write there.
+        // swiftlint:disable:next process_default_settings_store
         productionDefaults: () -> UserDefaults = { .standard },
         productionSecretStore: () -> SecretStoring = { KeychainSecretStore() },
+        // swiftlint:disable:next process_default_settings_store
         testDefaults: () -> UserDefaults = { UserDefaults(suiteName: "com.clipboardtts.hosted-tests.\(UUID().uuidString)")! },
         testSecretStore: () -> SecretStoring = { InMemorySecretStore() }
     ) -> AppStartupDependencies {

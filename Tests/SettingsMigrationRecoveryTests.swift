@@ -13,16 +13,18 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
         // when a new manager is created, so "again" would mean an undocumented relaunch. Recovery
         // has to be reachable where the guidance appears, and it is finished only when the secured
         // key is what the next request sends — not merely when the warning disappears.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("https://custom.api/v1/audio/speech", forKey: SettingsKeys.apiBaseURL)
-        UserDefaults.standard.set("custom-model", forKey: SettingsKeys.customModel)
-        UserDefaults.standard.set("custom-voice", forKey: SettingsKeys.customVoice)
-        UserDefaults.standard.set("test-legacy-custom-key", forKey: SettingsKeys.legacyCustomAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.apiBaseURL: "https://custom.api/v1/audio/speech",
+            SettingsKeys.customModel: "custom-model",
+            SettingsKeys.customVoice: "custom-voice",
+            SettingsKeys.legacyCustomAPIKey: "test-legacy-custom-key"
+        ])
 
         let secretStore = ScriptedSecretStore()
         secretStore.failingProviders = [.custom]
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         XCTAssertEqual(networkManager.lastError, APIKeyMigrationService.failureMessage(for: .custom))
         secretStore.failingProviders = []
 
@@ -37,17 +39,18 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
         XCTAssertTrue(settings.rendersButton(titled: "Retry Securing Saved Keys"))
         XCTAssertNil(secretStore.storedSecret(for: .custom))
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.legacyCustomAPIKey), "test-legacy-custom-key")
+        XCTAssertEqual(defaults.string(forKey: SettingsKeys.legacyCustomAPIKey), "test-legacy-custom-key")
 
         settings.click("Retry Securing Saved Keys")
 
         XCTAssertEqual(secretStore.storedSecret(for: .custom), "test-legacy-custom-key")
-        XCTAssertNil(UserDefaults.standard.object(forKey: SettingsKeys.legacyCustomAPIKey))
+        XCTAssertNil(defaults.object(forKey: SettingsKeys.legacyCustomAPIKey))
         XCTAssertFalse(settings.rendersButton(titled: "Retry Securing Saved Keys"))
         XCTAssertNil(networkManager.lastError)
 
@@ -59,19 +62,21 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
         settings.release()
     }
 
-    func testTheRetryMigratesTheInjectedPreferencesRatherThanTheProcessDomain() {
-        // WHY: The hosted test app already migrates a private preferences domain rather than
-        // `UserDefaults.standard`, and startup threads that choice explicitly for exactly this
-        // reason. A retry that reached for the process domain instead would leave the real legacy
-        // key exposed while deleting a key belonging to somebody else's configuration.
+    func testTheRetryMigratesThePreferencesItWasGivenRatherThanAnotherDomain() {
+        // WHY: The form migrates whichever domain it is handed, and the app hands it the domain
+        // startup migrated — a private one under test, `UserDefaults.standard` in production. A
+        // retry that reached for some other domain instead would leave the key it was given
+        // exposed while deleting one belonging to a different configuration.
         let injectedDefaults = InMemoryDefaults()
+        let otherDefaults = makeOwnedDefaults()
         let secretStore = ScriptedSecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: otherDefaults)
         // Each domain holds a different provider's key, so a form that read the wrong one would
-        // both rescue the wrong secret and leave the one it was given behind.
+        // both rescue the wrong secret and leave the one it was given behind. Both are seeded after
+        // the manager is built, because a manager migrates its own store as it starts up.
         injectedDefaults.set("test-injected-legacy-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
-        UserDefaults.standard.set("test-process-legacy-key", forKey: SettingsKeys.legacyCustomAPIKey)
+        otherDefaults.set("test-other-domain-legacy-key", forKey: SettingsKeys.legacyCustomAPIKey)
 
         let requestEmitted = expectation(description: "The injected domain's key reaches the next request")
         MockURLProtocol.installRequestHandler { request in
@@ -100,8 +105,8 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
         XCTAssertNil(injectedDefaults.string(forKey: SettingsKeys.legacyOpenAIAPIKey))
         XCTAssertNil(secretStore.storedSecret(for: .custom))
         XCTAssertEqual(
-            UserDefaults.standard.string(forKey: SettingsKeys.legacyCustomAPIKey),
-            "test-process-legacy-key"
+            otherDefaults.string(forKey: SettingsKeys.legacyCustomAPIKey),
+            "test-other-domain-legacy-key"
         )
         XCTAssertFalse(settings.rendersButton(titled: "Retry Securing Saved Keys"))
 
@@ -117,13 +122,15 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
         // than look as though it worked. When the store does accept the retry, the same rule that
         // protects a launch applies — a key the user saved after the failure is newer than the
         // plaintext, so securing must remove the stale value without overwriting the good one.
-        UserDefaults.standard.set("test-stale-legacy-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: "test-stale-legacy-key"
+        ])
 
         let secretStore = ScriptedSecretStore()
         secretStore.seed("test-newer-keychain-key", for: .openAI)
         secretStore.failingProviders = [.openAI]
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         secretStore.failingProviders = []
 
         let requestEmitted = expectation(description: "Test Voice still uses the newer saved key")
@@ -141,13 +148,14 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
         secretStore.failingProviders = [.openAI]
 
         settings.click("Retry Securing Saved Keys")
 
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.legacyOpenAIAPIKey), "test-stale-legacy-key")
+        XCTAssertEqual(defaults.string(forKey: SettingsKeys.legacyOpenAIAPIKey), "test-stale-legacy-key")
         XCTAssertEqual(secretStore.storedSecret(for: .openAI), "test-newer-keychain-key")
         XCTAssertTrue(settings.rendersButton(titled: "Retry Securing Saved Keys"))
         XCTAssertEqual(networkManager.lastError, APIKeyMigrationService.failureMessage(for: .openAI))
@@ -156,7 +164,7 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
         settings.click("Retry Securing Saved Keys")
 
         XCTAssertEqual(secretStore.storedSecret(for: .openAI), "test-newer-keychain-key")
-        XCTAssertNil(UserDefaults.standard.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
+        XCTAssertNil(defaults.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
         XCTAssertFalse(settings.rendersButton(titled: "Retry Securing Saved Keys"))
         XCTAssertNil(networkManager.lastError)
 
@@ -171,13 +179,15 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
         // provider that is now safe must not keep claiming the user has plaintext to rescue. The
         // one that failed keeps both its value and a warning that names it, because a warning left
         // naming the recovered provider would send the user looking in the wrong place.
-        UserDefaults.standard.set("test-legacy-openai-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
-        UserDefaults.standard.set("test-legacy-gemini-key", forKey: SettingsKeys.legacyGeminiAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: "test-legacy-openai-key",
+            SettingsKeys.legacyGeminiAPIKey: "test-legacy-gemini-key"
+        ])
 
         let secretStore = ScriptedSecretStore()
         secretStore.failingProviders = [.openAI, .gemini]
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         XCTAssertEqual(networkManager.lastError, APIKeyMigrationService.failureMessage(for: .openAI))
         secretStore.failingProviders = []
         MockURLProtocol.installRequestHandler { request in
@@ -188,6 +198,7 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
         secretStore.failingProviders = [.gemini]
@@ -195,9 +206,9 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
         settings.click("Retry Securing Saved Keys")
 
         XCTAssertEqual(secretStore.storedSecret(for: .openAI), "test-legacy-openai-key")
-        XCTAssertNil(UserDefaults.standard.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
+        XCTAssertNil(defaults.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
         XCTAssertNil(secretStore.storedSecret(for: .gemini))
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.legacyGeminiAPIKey), "test-legacy-gemini-key")
+        XCTAssertEqual(defaults.string(forKey: SettingsKeys.legacyGeminiAPIKey), "test-legacy-gemini-key")
         XCTAssertTrue(settings.rendersButton(titled: "Retry Securing Saved Keys"))
         XCTAssertEqual(networkManager.lastError, APIKeyMigrationService.failureMessage(for: .gemini))
         settings.release()
@@ -207,11 +218,13 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
         // WHY: Typing a key resolves that provider as completely as securing it does, so the menu
         // bar must stop warning about plaintext the app no longer holds and Settings must stop
         // offering to rescue it. Otherwise the user is told to act on a problem they just fixed.
-        UserDefaults.standard.set("test-legacy-openai-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.legacyOpenAIAPIKey: "test-legacy-openai-key"
+        ])
         let secretStore = ScriptedSecretStore()
         secretStore.failingProviders = [.openAI]
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         XCTAssertEqual(networkManager.lastError, APIKeyMigrationService.failureMessage(for: .openAI))
         secretStore.failingProviders = []
         MockURLProtocol.installRequestHandler { request in
@@ -222,6 +235,7 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
         XCTAssertTrue(settings.rendersButton(titled: "Retry Securing Saved Keys"))
@@ -229,7 +243,7 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
         settings.typeAPIKey("test-typed-openai-key")
 
         XCTAssertEqual(secretStore.storedSecret(for: .openAI), "test-typed-openai-key")
-        XCTAssertNil(UserDefaults.standard.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
+        XCTAssertNil(defaults.object(forKey: SettingsKeys.legacyOpenAIAPIKey))
         XCTAssertFalse(settings.rendersButton(titled: "Retry Securing Saved Keys"))
         XCTAssertNil(networkManager.lastError)
         settings.release()
@@ -242,7 +256,8 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
         let secretStore = ScriptedSecretStore()
         secretStore.seed("test-openai-key", for: .openAI)
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let defaults = makeOwnedDefaults()
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         MockURLProtocol.installRequestHandler { request in
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, Data("{ \"data\": [] }".utf8))
@@ -251,6 +266,7 @@ final class SettingsMigrationRecoveryTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 

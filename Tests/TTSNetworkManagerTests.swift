@@ -93,13 +93,15 @@ final class TTSNetworkManagerTests: MockURLProtocolTestCase {
         // WHY: Custom model and voice are required request fields, so a cold launch must restore
         // them before Settings is opened. Falling back to empty values would make clipboard and
         // Services speech fail despite the user having already configured the provider.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("https://custom.api/v1/audio/speech", forKey: SettingsKeys.apiBaseURL)
-        UserDefaults.standard.set("persisted-custom-key", forKey: SettingsKeys.legacyCustomAPIKey)
-        UserDefaults.standard.set("persisted-custom-model", forKey: SettingsKeys.customModel)
-        UserDefaults.standard.set("persisted-custom-voice", forKey: SettingsKeys.customVoice)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.apiBaseURL: "https://custom.api/v1/audio/speech",
+            SettingsKeys.legacyCustomAPIKey: "persisted-custom-key",
+            SettingsKeys.customModel: "persisted-custom-model",
+            SettingsKeys.customVoice: "persisted-custom-voice"
+        ])
 
-        let manager = TestNetworkFactory.makeManager()
+        let manager = TestNetworkFactory.makeManager(defaults: defaults)
         let requestEmitted = expectation(description: "Persisted Custom values form a request")
         MockURLProtocol.installRequestHandler { request in
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer persisted-custom-key")
@@ -291,13 +293,22 @@ final class TTSNetworkManagerTests: MockURLProtocolTestCase {
         // same keys so user-chosen settings survive an app restart even before the settings
         // window is opened. A regression here would silently fall back to hardcoded defaults
         // (tts-1/alloy) on every cold start until the user re-opens settings.
-        // OpenAI: persisted model/voice/key should drive the outgoing request
-        UserDefaults.standard.set("OpenAI", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("persisted-openai-model", forKey: SettingsKeys.openAIModel)
-        UserDefaults.standard.set("persisted-openai-voice", forKey: SettingsKeys.openAIVoice)
-        UserDefaults.standard.set("persisted-openai-key", forKey: SettingsKeys.legacyOpenAIAPIKey)
+        // OpenAI: persisted model/voice/key should drive the outgoing request. Each provider gets
+        // its own store because each manager reads its settings once, when it is constructed.
+        let openaiDefaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "OpenAI",
+            SettingsKeys.openAIModel: "persisted-openai-model",
+            SettingsKeys.openAIVoice: "persisted-openai-voice",
+            SettingsKeys.legacyOpenAIAPIKey: "persisted-openai-key"
+        ])
+        let geminiDefaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Gemini",
+            SettingsKeys.geminiModel: "persisted-gemini-model",
+            SettingsKeys.geminiVoice: "persisted-gemini-voice",
+            SettingsKeys.legacyGeminiAPIKey: "persisted-gemini-key"
+        ])
 
-        let openaiManager = TestNetworkFactory.makeManager()
+        let openaiManager = TestNetworkFactory.makeManager(defaults: openaiDefaults)
         let openaiExpectation = XCTestExpectation(description: "OpenAI request uses persisted values")
 
         MockURLProtocol.installRequestHandler { request in
@@ -332,12 +343,8 @@ final class TTSNetworkManagerTests: MockURLProtocolTestCase {
         wait(for: [openaiExpectation], timeout: 2.0)
 
         // Gemini: persisted model embeds in URL path, voice embeds in request body.
-        UserDefaults.standard.set("Gemini", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("persisted-gemini-model", forKey: SettingsKeys.geminiModel)
-        UserDefaults.standard.set("persisted-gemini-voice", forKey: SettingsKeys.geminiVoice)
-        UserDefaults.standard.set("persisted-gemini-key", forKey: SettingsKeys.legacyGeminiAPIKey)
 
-        let geminiManager = TestNetworkFactory.makeManager()
+        let geminiManager = TestNetworkFactory.makeManager(defaults: geminiDefaults)
         let geminiExpectation = XCTestExpectation(description: "Gemini request uses persisted values")
 
         MockURLProtocol.installRequestHandler { request in

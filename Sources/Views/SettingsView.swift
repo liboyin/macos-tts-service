@@ -1,20 +1,35 @@
 import SwiftUI
 
 struct SettingsView: View {
+    /// The values the form shows when the injected store holds no preference for a key yet.
+    ///
+    /// They live here rather than on each `@AppStorage` declaration because `init` binds every one
+    /// of them to the caller's store, which leaves the declarations without an initializer.
+    private enum Fallback {
+        static let ttsProvider = "OpenAI"
+        static let apiBaseURL = "https://api.openai.com/v1/audio/speech"
+        static let openAIModel = "tts-1"
+        static let openAIVoice = "alloy"
+        static let geminiModel = "gemini-3.1-flash-tts-preview"
+        static let geminiVoice = "Aoede"
+        static let customModel = ""
+        static let customVoice = ""
+    }
+
     @ObservedObject private var networkManager: TTSNetworkManager
     @ObservedObject private var audioPlayer: AudioPlayerManager
     @StateObject private var secretState: SettingsSecretState
     private let aboutAction: AboutAction
 
-    @AppStorage(SettingsKeys.ttsProvider) private var ttsProvider: String = "OpenAI"
-    @AppStorage(SettingsKeys.apiBaseURL) private var apiBaseURL: String = "https://api.openai.com/v1/audio/speech"
-    @AppStorage(SettingsKeys.openAIModel) private var openaiModel: String = "tts-1"
-    @AppStorage(SettingsKeys.openAIVoice) private var openaiVoice: String = "alloy"
-    @AppStorage(SettingsKeys.geminiModel) private var geminiModel: String = "gemini-3.1-flash-tts-preview"
-    @AppStorage(SettingsKeys.geminiVoice) private var geminiVoice: String = "Aoede"
-    @AppStorage(SettingsKeys.customModel) private var customModel: String = ""
-    @AppStorage(SettingsKeys.customVoice) private var customVoice: String = ""
-    @AppStorage(SettingsKeys.customSampleRate) private var customSampleRate: Double = AudioPlayerManager.defaultSampleRate
+    @AppStorage private var ttsProvider: String
+    @AppStorage private var apiBaseURL: String
+    @AppStorage private var openaiModel: String
+    @AppStorage private var openaiVoice: String
+    @AppStorage private var geminiModel: String
+    @AppStorage private var geminiVoice: String
+    @AppStorage private var customModel: String
+    @AppStorage private var customVoice: String
+    @AppStorage private var customSampleRate: Double
     @State private var customSampleRateText = ""
     @State private var isCustomSampleRateDraftValid = true
 
@@ -22,11 +37,11 @@ struct SettingsView: View {
     /// retry reads and clears legacy keys, so it must be the same domain the app migrated at
     /// startup rather than whichever one `.standard` names in the caller's process.
     ///
-    /// It reaches only that migration. The properties below are plain `@AppStorage`, which resolves
-    /// against the process's default store, so the app must pass the domain its own preferences
-    /// live in — production passes `AppStartupDependencies.defaults`, which is `UserDefaults`
-    /// `.standard`. Passing a domain that holds different provider settings makes the form migrate
-    /// one domain's keys while displaying another's configuration.
+    /// Every preference the form displays is bound to that same store below, so one argument now
+    /// selects the whole domain the window reads, writes, and migrates. Binding each `@AppStorage`
+    /// explicitly is what makes that true: the property-wrapper attribute alone resolves against
+    /// the process's default store, which in the hosted test app is the installed app's own domain
+    /// rather than the private one startup built.
     init(networkManager: TTSNetworkManager,
          audioPlayer: AudioPlayerManager,
          secretStore: SecretStoring = KeychainSecretStore(),
@@ -36,6 +51,19 @@ struct SettingsView: View {
         self.audioPlayer = audioPlayer
         self.aboutAction = aboutAction
         _secretState = StateObject(wrappedValue: SettingsSecretState(secretStore: secretStore, defaults: defaults))
+        _ttsProvider = AppStorage(wrappedValue: Fallback.ttsProvider, SettingsKeys.ttsProvider, store: defaults)
+        _apiBaseURL = AppStorage(wrappedValue: Fallback.apiBaseURL, SettingsKeys.apiBaseURL, store: defaults)
+        _openaiModel = AppStorage(wrappedValue: Fallback.openAIModel, SettingsKeys.openAIModel, store: defaults)
+        _openaiVoice = AppStorage(wrappedValue: Fallback.openAIVoice, SettingsKeys.openAIVoice, store: defaults)
+        _geminiModel = AppStorage(wrappedValue: Fallback.geminiModel, SettingsKeys.geminiModel, store: defaults)
+        _geminiVoice = AppStorage(wrappedValue: Fallback.geminiVoice, SettingsKeys.geminiVoice, store: defaults)
+        _customModel = AppStorage(wrappedValue: Fallback.customModel, SettingsKeys.customModel, store: defaults)
+        _customVoice = AppStorage(wrappedValue: Fallback.customVoice, SettingsKeys.customVoice, store: defaults)
+        _customSampleRate = AppStorage(
+            wrappedValue: AudioPlayerManager.defaultSampleRate,
+            SettingsKeys.customSampleRate,
+            store: defaults
+        )
     }
 
     private var selectedProvider: APIKeyProvider {

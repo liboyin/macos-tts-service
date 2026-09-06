@@ -37,7 +37,8 @@ final class SettingsAboutTests: MockURLProtocolTestCase {
         // must keep the conventional control and route its click without opening AppKit UI in tests.
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let defaults = makeOwnedDefaults()
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         // Opening Settings on OpenAI fetches its model and voice suggestions.
         MockURLProtocol.installRequestHandler { request in
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
@@ -48,6 +49,7 @@ final class SettingsAboutTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             aboutAction: AboutAction(
                 metadata: StaticAboutMetadata(applicationName: "Test Clipboard TTS", applicationVersion: "7.3"),
                 presenter: presenter
@@ -68,13 +70,14 @@ final class SettingsAboutTests: MockURLProtocolTestCase {
         // `showAbout` reads no lifecycle-managed state, so it needs no SwiftUI host.
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let defaults = makeOwnedDefaults()
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         let presenter = CapturingAboutPanelPresenter()
         let view = SettingsView(
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
-            defaults: .standard,
+            defaults: defaults,
             aboutAction: AboutAction(
                 metadata: StaticAboutMetadata(applicationName: "Test Clipboard TTS", applicationVersion: "7.3"),
                 presenter: presenter

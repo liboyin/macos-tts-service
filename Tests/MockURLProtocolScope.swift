@@ -279,7 +279,7 @@ extension MockURLProtocol {
     /// otherwise hold the mock-test gate closed and hang every following mock-network test.
     /// Returns whether the scope quiesced. A scope that did not is left registered, because an
     /// owner this call could not revoke can still deliver into whatever runs next; the caller must
-    /// fail the run rather than restore settings or release the gate.
+    /// fail the run rather than release the gate.
     static func finishClosingTestWhenQuiescent(identifier: String, timeout: TimeInterval = 5.0) -> Bool {
         ScopeStorage.condition.lock()
         defer { ScopeStorage.condition.unlock() }

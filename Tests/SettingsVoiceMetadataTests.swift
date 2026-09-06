@@ -12,14 +12,17 @@ final class SettingsVoiceMetadataTests: MockURLProtocolTestCase {
         // the only surface a documented voice can reach. Publishing a subset of the provider
         // contract would put a documented voice out of reach entirely, so this drives the rendered
         // Settings form and reads back the voice suggestions it actually shows.
-        UserDefaults.standard.set("Gemini", forKey: SettingsKeys.ttsProvider)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Gemini"
+        ])
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         let settings = HostedSettings(
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -39,14 +42,16 @@ final class SettingsVoiceMetadataTests: MockURLProtocolTestCase {
         // this provider's contract and leave the picker's selection without a matching tag, which
         // SwiftUI documents as undefined. Custom is what holds that state still: it fetches no
         // metadata, so nothing replaces the OpenAI lists this manager already published.
-        UserDefaults.standard.set("Custom", forKey: SettingsKeys.ttsProvider)
-        UserDefaults.standard.set("https://custom.api/v1/audio/speech", forKey: SettingsKeys.apiBaseURL)
-        UserDefaults.standard.set("custom-model", forKey: SettingsKeys.customModel)
-        UserDefaults.standard.set("custom-voice", forKey: SettingsKeys.customVoice)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Custom",
+            SettingsKeys.apiBaseURL: "https://custom.api/v1/audio/speech",
+            SettingsKeys.customModel: "custom-model",
+            SettingsKeys.customVoice: "custom-voice"
+        ])
 
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         networkManager.modelSuggestions = ProviderSuggestions(provider: "OpenAI", values: ["tts-1", "tts-1-hd"])
         networkManager.voiceSuggestions = ProviderSuggestions(provider: "OpenAI", values: ["alloy", "nova"])
 
@@ -54,6 +59,7 @@ final class SettingsVoiceMetadataTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -62,8 +68,8 @@ final class SettingsVoiceMetadataTests: MockURLProtocolTestCase {
         // which is a different guarantee from refusing to render another provider's list.
         XCTAssertEqual(networkManager.modelSuggestions.values, ["tts-1", "tts-1-hd"])
         XCTAssertEqual(networkManager.voiceSuggestions.values, ["alloy", "nova"])
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.customModel), "custom-model")
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.customVoice), "custom-voice")
+        XCTAssertEqual(defaults.string(forKey: SettingsKeys.customModel), "custom-model")
+        XCTAssertEqual(defaults.string(forKey: SettingsKeys.customVoice), "custom-voice")
         settings.release()
     }
 
@@ -122,11 +128,13 @@ final class SettingsVoiceMetadataTests: MockURLProtocolTestCase {
         // can be corrected from. Dropping either from its picker would leave that selection without
         // a matching tag; replacing it with a catalog entry would send a request the user never
         // configured. Both fields are driven because each renders its own picker.
-        UserDefaults.standard.set("Gemini", forKey: SettingsKeys.ttsProvider)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.ttsProvider: "Gemini"
+        ])
         let secretStore = InMemorySecretStore()
         try secretStore.saveSecret("test-gemini-api-key", for: .gemini)
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
 
         let requestEmitted = expectation(description: "Test Voice sends the typed Gemini model and voice")
         MockURLProtocol.installRequestHandler { request in
@@ -143,6 +151,7 @@ final class SettingsVoiceMetadataTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -162,8 +171,8 @@ final class SettingsVoiceMetadataTests: MockURLProtocolTestCase {
                 )
             ]
         )
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.geminiModel), "gemini-3.1-pro-tts-preview")
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.geminiVoice), "Unlisted-Preview-Voice")
+        XCTAssertEqual(defaults.string(forKey: SettingsKeys.geminiModel), "gemini-3.1-pro-tts-preview")
+        XCTAssertEqual(defaults.string(forKey: SettingsKeys.geminiVoice), "Unlisted-Preview-Voice")
 
         settings.click("Test Voice")
 
@@ -176,11 +185,13 @@ final class SettingsVoiceMetadataTests: MockURLProtocolTestCase {
         // still-published lists. Afterwards the form must offer only Gemini's choices, must still
         // show the values saved for Gemini rather than one carried over from the provider it left,
         // and each picker must display its own selection.
-        UserDefaults.standard.set("Sulafat", forKey: SettingsKeys.geminiVoice)
+        let defaults = makeOwnedDefaults([
+            SettingsKeys.geminiVoice: "Sulafat"
+        ])
 
         let secretStore = InMemorySecretStore()
         let audioPlayer = AudioPlayerManager()
-        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore)
+        let networkManager = TestNetworkFactory.makeManager(secretStore: secretStore, defaults: defaults)
         MockURLProtocol.installRequestHandler { request in
             let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
             return (response, Data("{ \"data\": [{\"id\": \"tts-1\"}, {\"id\": \"tts-1-hd\"}] }".utf8))
@@ -189,6 +200,7 @@ final class SettingsVoiceMetadataTests: MockURLProtocolTestCase {
             networkManager: networkManager,
             audioPlayer: audioPlayer,
             secretStore: secretStore,
+            defaults: defaults,
             testCase: self
         )
 
@@ -206,7 +218,7 @@ final class SettingsVoiceMetadataTests: MockURLProtocolTestCase {
                 HostedSettings.SuggestionControl(choices: documentedGeminiTTSVoices, selection: "Sulafat")
             ]
         )
-        XCTAssertEqual(UserDefaults.standard.string(forKey: SettingsKeys.geminiVoice), "Sulafat")
+        XCTAssertEqual(defaults.string(forKey: SettingsKeys.geminiVoice), "Sulafat")
         settings.release()
     }
 }
