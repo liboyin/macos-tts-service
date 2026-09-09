@@ -19,6 +19,8 @@ final class AudioPlayerManager: ObservableObject, @unchecked Sendable {
     static let defaultSampleRate = 24_000.0
     static let supportedSampleRateRange = 8_000.0...48_000.0
     private static let automaticPlaybackPrebufferDuration: TimeInterval = 0.1
+    /// How often playback republishes its position while a stream plays.
+    private static let progressTickInterval: TimeInterval = 0.1
     enum SampleRateUpdateResult: Equatable {
         case unchanged
         case updated
@@ -56,11 +58,21 @@ final class AudioPlayerManager: ObservableObject, @unchecked Sendable {
     private let engineStarter: (AVAudioEngine) throws -> Void
     /// Defers the automatic-playback start; the action it is given crosses to the main queue.
     private let automaticPlaybackScheduler: (TimeInterval, @escaping @Sendable () -> Void) -> Void
+    /// Reads the position the node has rendered, in frames of the active format, for one progress
+    /// tick. It takes the node rather than capturing it so a caller can state a rendered position
+    /// instead of depending on live audio output.
+    private let renderedSampleTime: (AVAudioPlayerNode) -> AVAudioFramePosition?
+    /// Schedules the repeating progress timer the manager built. Production adds it to the main run
+    /// loop; a caller that keeps the timer instead can fire the manager's own callback where it
+    /// wants a tick, rather than waiting the cadence out.
+    private let progressTimerScheduler: (Timer) -> Void
     private let audioObservers: (processed: () -> Void, statePublished: () -> Void)
     private var progressTimer: Timer?
     /// Creates the audio graph. The buffer observer is notified after each buffer is passed to the node.
-    /// The scheduler defers automatic playback after the first complete PCM frame. The processing
-    /// observer runs after the audio queue handles a packet, and the state observer runs after publication.
+    /// The scheduler defers automatic playback after the first complete PCM frame. The rendered-sample-time
+    /// reader supplies each progress tick its position, and the timer scheduler decides where the timer
+    /// driving those ticks runs. The processing observer runs after the audio queue
+    /// handles a packet, and the state observer runs after publication.
     init(sampleRate: Double = AudioPlayerManager.defaultSampleRate,
          scheduledBufferObserver: @escaping (AVAudioPCMBuffer) -> Void = { _ in },
          engineStarter: @escaping (AVAudioEngine) throws -> Void = { try $0.start() },
@@ -70,11 +82,21 @@ final class AudioPlayerManager: ObservableObject, @unchecked Sendable {
                  execute: action
              )
          },
+         renderedSampleTimeReader: @escaping (AVAudioPlayerNode) -> AVAudioFramePosition? = { node in
+             guard let nodeTime = node.lastRenderTime,
+                   let playerTime = node.playerTime(forNodeTime: nodeTime) else { return nil }
+             return playerTime.sampleTime
+         },
+         progressTimerScheduler: @escaping (Timer) -> Void = { timer in
+             RunLoop.main.add(timer, forMode: .default)
+         },
          audioDataProcessingObserver: @escaping () -> Void = {},
          audioStateObserver: @escaping () -> Void = {}) {
         self.scheduledBufferObserver = scheduledBufferObserver
         self.engineStarter = engineStarter
         self.automaticPlaybackScheduler = automaticPlaybackScheduler
+        self.renderedSampleTime = renderedSampleTimeReader
+        self.progressTimerScheduler = progressTimerScheduler
         self.audioObservers = (processed: audioDataProcessingObserver, statePublished: audioStateObserver)
         let hasValidInitialSampleRate = Self.isSupportedSampleRate(sampleRate)
         let initialSampleRate = hasValidInitialSampleRate ? sampleRate : Self.defaultSampleRate
@@ -368,25 +390,40 @@ final class AudioPlayerManager: ObservableObject, @unchecked Sendable {
         }
         return buffer
     }
+}
+
+/// Progress reporting: the repeating tick that turns the node's rendered position into the
+/// published playback position, and the timer that drives it while a stream plays.
+extension AudioPlayerManager {
+    /// Publishes the position one progress tick has reached, reading the rendered sample time and
+    /// applying it within a single main-queue turn.
+    ///
+    /// The read and the publication must stay in one turn. `seek` installs a new
+    /// `baseProgressOffset` on the main queue, so a tick that deferred its update would add a
+    /// position rendered before the seek to the offset that seek installed. That sum reports
+    /// playback ahead of the position the user chose, and pauses the stream once it reaches the
+    /// buffered end. Reaching that end on a tick of its own still pauses, which is how playback
+    /// stops when the buffer runs out.
+    func applyProgressTick() {
+        guard let sampleTime = renderedSampleTime(playerNode),
+              let newProgress = progress(forRenderedSampleTime: sampleTime) else { return }
+        if newProgress > 0 && newProgress <= bufferDuration {
+            playbackProgress = newProgress
+        } else if newProgress > bufferDuration {
+            playbackProgress = bufferDuration
+        }
+        if isPlaying && playbackProgress >= bufferDuration && bufferDuration > 0 {
+            pause()
+        }
+    }
+
     private func startProgressTimer() {
         stopProgressTimer()
-        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self = self,
-                  let nodeTime = self.playerNode.lastRenderTime,
-                  let playerTime = self.playerNode.playerTime(forNodeTime: nodeTime) else { return }
-            DispatchQueue.main.async {
-                if let newProgress = self.progress(forRenderedSampleTime: playerTime.sampleTime) {
-                    if newProgress > 0 && newProgress <= self.bufferDuration {
-                        self.playbackProgress = newProgress
-                    } else if newProgress > self.bufferDuration {
-                        self.playbackProgress = self.bufferDuration
-                    }
-                    if self.isPlaying && self.playbackProgress >= self.bufferDuration && self.bufferDuration > 0 {
-                        self.pause()
-                    }
-                }
-            }
+        let timer = Timer(timeInterval: Self.progressTickInterval, repeats: true) { [weak self] _ in
+            self?.applyProgressTick()
         }
+        progressTimer = timer
+        progressTimerScheduler(timer)
     }
 
     private func stopProgressTimer() {

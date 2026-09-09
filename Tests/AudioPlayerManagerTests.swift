@@ -355,6 +355,187 @@ final class AudioPlayerManagerTests: XCTestCase {
 
 }
 
+/// Covers the progress tick that publishes playback position: the timer calls it, and these tests
+/// call it directly, so a stated rendered position replaces whatever live audio has rendered.
+final class AudioPlayerProgressTickTests: XCTestCase {
+
+    func testProgressTickPublishesItsRenderedPositionBeforeALaterSeekChangesTheOffset() {
+        // WHY: A tick's rendered position and the seek offset it is added to must come from one
+        // main-queue turn. Adding a position rendered before a seek to the offset that seek
+        // installed reported playback beyond the position the user chose, and paused a stream at
+        // the buffered end while it was still playing.
+        let renderedPosition = RenderedPositionSource(sampleTime: 4_800) // 0.2 second at 24 kHz
+        let heldAutomaticStart = ManualAutomaticPlaybackScheduler()
+        let bufferPublished = expectation(description: "Buffered audio state is published")
+        let player = AudioPlayerManager(
+            automaticPlaybackScheduler: heldAutomaticStart.schedule,
+            renderedSampleTimeReader: renderedPosition.read,
+            audioStateObserver: { bufferPublished.fulfill() }
+        )
+        defer { player.stop() }
+        let generation = player.startNewStream()
+        player.scheduleAudio(data: Data(repeating: 0, count: 96_000), streamGeneration: generation) // 2 seconds
+        wait(for: [bufferPublished], timeout: 1.0)
+        XCTAssertEqual(player.bufferDuration, 2.0, accuracy: 0.000_001)
+
+        player.applyProgressTick()
+        XCTAssertEqual(player.playbackProgress, 0.2, accuracy: 0.000_001)
+
+        player.seek(to: 1.8)
+        drainMainQueue()
+
+        XCTAssertEqual(player.playbackProgress, 1.8, accuracy: 0.000_001)
+        XCTAssertTrue(player.hasAudio)
+    }
+
+    func testProgressTickPastTheBufferedEndClampsProgressAndPausesTheStreamForGood() {
+        // WHY: The tick is what stops playback once rendering reaches the end of the buffered PCM.
+        // It must publish the buffered end rather than a position beyond it, keep the audio for
+        // replay, stop its own timer, and pause the stream in the way that revokes the prebuffer
+        // start still pending behind it, which would otherwise resume what the tick just ended.
+        let renderedPosition = RenderedPositionSource(sampleTime: 60_000) // 2.5 seconds at 24 kHz
+        let heldAutomaticStart = ManualAutomaticPlaybackScheduler()
+        let progressTimer = ProgressTimerSpy()
+        let bufferPublished = expectation(description: "Buffered audio state is published")
+        let player = AudioPlayerManager(
+            automaticPlaybackScheduler: heldAutomaticStart.schedule,
+            renderedSampleTimeReader: renderedPosition.read,
+            progressTimerScheduler: progressTimer.schedule,
+            audioStateObserver: { bufferPublished.fulfill() }
+        )
+        defer { player.stop() }
+        let generation = player.startNewStream()
+        player.scheduleAudio(data: Data(repeating: 0, count: 96_000), streamGeneration: generation) // 2 seconds
+        wait(for: [bufferPublished], timeout: 1.0)
+        XCTAssertEqual(heldAutomaticStart.scheduledDelays, [0.1])
+
+        player.play()
+        XCTAssertTrue(player.isPlaying)
+
+        progressTimer.fireTick()
+
+        XCTAssertEqual(player.playbackProgress, 2.0, accuracy: 0.000_001)
+        XCTAssertFalse(player.isPlaying)
+        XCTAssertTrue(player.hasAudio)
+        XCTAssertFalse(progressTimer.isRunning)
+
+        heldAutomaticStart.runNextAction()
+        drainMainQueue()
+
+        XCTAssertFalse(player.isPlaying)
+    }
+
+    func testProgressTickWithoutARenderedPositionLeavesPublishedProgressAlone() {
+        // WHY: The node reports no render time before it has played anything and between a stop and
+        // the next start. A tick that reads none must leave the position playback has reached,
+        // rather than publishing the seek offset as though nothing had been rendered since.
+        let renderedPosition = RenderedPositionSource(sampleTime: nil)
+        let heldAutomaticStart = ManualAutomaticPlaybackScheduler()
+        let bufferPublished = expectation(description: "Buffered audio state is published")
+        let player = AudioPlayerManager(
+            automaticPlaybackScheduler: heldAutomaticStart.schedule,
+            renderedSampleTimeReader: renderedPosition.read,
+            audioStateObserver: { bufferPublished.fulfill() }
+        )
+        defer { player.stop() }
+        let generation = player.startNewStream()
+        player.scheduleAudio(data: Data(repeating: 0, count: 96_000), streamGeneration: generation) // 2 seconds
+        wait(for: [bufferPublished], timeout: 1.0)
+        player.seek(to: 0.5)
+        renderedPosition.sampleTime = 12_000 // 0.5 second rendered since that seek
+        player.applyProgressTick()
+        XCTAssertEqual(player.playbackProgress, 1.0, accuracy: 0.000_001)
+
+        renderedPosition.sampleTime = nil
+        player.applyProgressTick()
+
+        XCTAssertEqual(player.playbackProgress, 1.0, accuracy: 0.000_001)
+        XCTAssertFalse(player.isPlaying)
+    }
+
+    func testPlaybackDrivesEveryTickOfItsProgressTimerUntilItStops() {
+        // WHY: The timer is what publishes position during playback. A driver that started but
+        // called nothing would freeze the progress the menu shows and never pause at the buffered
+        // end, so the tick the manager hands its timer must be the one that publishes.
+        let renderedPosition = RenderedPositionSource(sampleTime: nil)
+        let heldAutomaticStart = ManualAutomaticPlaybackScheduler()
+        let progressTimer = ProgressTimerSpy()
+        let bufferPublished = expectation(description: "Buffered audio state is published")
+        let player = AudioPlayerManager(
+            automaticPlaybackScheduler: heldAutomaticStart.schedule,
+            renderedSampleTimeReader: renderedPosition.read,
+            progressTimerScheduler: progressTimer.schedule,
+            audioStateObserver: { bufferPublished.fulfill() }
+        )
+        defer { player.stop() }
+        let generation = player.startNewStream()
+        player.scheduleAudio(data: Data(repeating: 0, count: 96_000), streamGeneration: generation) // 2 seconds
+        wait(for: [bufferPublished], timeout: 1.0)
+
+        player.play()
+        XCTAssertEqual(progressTimer.requestedInterval, 0.1)
+
+        renderedPosition.sampleTime = 4_800 // 0.2 second at 24 kHz
+        progressTimer.fireTick()
+        XCTAssertEqual(player.playbackProgress, 0.2, accuracy: 0.000_001)
+
+        renderedPosition.sampleTime = 12_000 // 0.5 second at 24 kHz
+        progressTimer.fireTick()
+        XCTAssertEqual(player.playbackProgress, 0.5, accuracy: 0.000_001)
+
+        player.pause()
+        XCTAssertFalse(progressTimer.isRunning)
+    }
+
+    /// Runs the main queue once, so any update a progress tick deferred would land before the
+    /// assertions that follow.
+    private func drainMainQueue() {
+        let drained = expectation(description: "Main queue drained")
+        DispatchQueue.main.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2.0)
+    }
+}
+
+/// States the rendered position a progress tick reads, so a test can drive the tick from a position
+/// it chose instead of from whatever the live audio graph has rendered by then.
+private final class RenderedPositionSource {
+    var sampleTime: AVAudioFramePosition?
+
+    init(sampleTime: AVAudioFramePosition?) {
+        self.sampleTime = sampleTime
+    }
+
+    func read(_: AVAudioPlayerNode) -> AVAudioFramePosition? {
+        sampleTime
+    }
+}
+
+/// Keeps the manager's progress timer out of every run loop, so the only ticks are the ones a test
+/// fires, and each one runs the callback the manager gave that timer.
+private final class ProgressTimerSpy {
+    private(set) var timer: Timer?
+
+    var isRunning: Bool {
+        timer?.isValid ?? false
+    }
+
+    var requestedInterval: TimeInterval? {
+        timer?.timeInterval
+    }
+
+    func schedule(_ timer: Timer) {
+        self.timer = timer
+    }
+
+    func fireTick(file: StaticString = #filePath, line: UInt = #line) {
+        guard let timer, timer.isValid else {
+            XCTFail("No progress timer is running, so it cannot tick.", file: file, line: line)
+            return
+        }
+        timer.fire()
+    }
+}
+
 private final class ScheduledBufferSpy {
     private let lock = NSLock()
     private var scheduledBufferCount = 0
