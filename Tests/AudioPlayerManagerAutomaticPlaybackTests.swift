@@ -88,6 +88,126 @@ final class AudioPlayerManagerAutomaticPlaybackTests: XCTestCase {
         XCTAssertTrue(player.hasAudio)
     }
 
+    func testPauseBeforePrebufferDeadlineKeepsPlaybackPaused() {
+        // WHY: The deferred start observes only isPlaying, which pausing clears, so an explicit
+        // Pause taken inside the prebuffer window must revoke it instead of being reversed by it.
+        let scheduler = ManualAutomaticPlaybackScheduler()
+        let stateUpdates = AudioStateUpdateRecorder()
+        let bufferedAudioState = stateUpdates.expectNextUpdate()
+        let player = AudioPlayerManager(
+            automaticPlaybackScheduler: scheduler.schedule,
+            audioStateObserver: stateUpdates.record
+        )
+        defer { player.stop() }
+        let generation = player.startNewStream()
+        player.scheduleAudio(data: Data(repeating: 0, count: 2), streamGeneration: generation)
+
+        wait(for: [bufferedAudioState], timeout: 1.0)
+        player.play()
+        XCTAssertTrue(player.isPlaying)
+        player.pause()
+        XCTAssertFalse(player.isPlaying)
+
+        scheduler.runNextAction()
+
+        assertPlayingState(of: player, is: false)
+        XCTAssertTrue(player.hasAudio)
+    }
+
+    func testPlayResumesStreamWhosePendingAutomaticStartPauseRevoked() {
+        // WHY: Revoking the pending automatic start must cost the user nothing but the automatic
+        // start; the same stream still has to resume on demand.
+        let scheduler = ManualAutomaticPlaybackScheduler()
+        let stateUpdates = AudioStateUpdateRecorder()
+        let bufferedAudioState = stateUpdates.expectNextUpdate()
+        let player = AudioPlayerManager(
+            automaticPlaybackScheduler: scheduler.schedule,
+            audioStateObserver: stateUpdates.record
+        )
+        defer { player.stop() }
+        let generation = player.startNewStream()
+        player.scheduleAudio(data: Data(repeating: 0, count: 2), streamGeneration: generation)
+
+        wait(for: [bufferedAudioState], timeout: 1.0)
+        player.play()
+        player.pause()
+        scheduler.runNextAction()
+        assertPlayingState(of: player, is: false)
+
+        player.play()
+
+        XCTAssertTrue(player.isPlaying)
+        assertPlayingState(of: player, is: true)
+    }
+
+    func testAutomaticPlaybackStartsForStreamBegunAfterAPause() {
+        // WHY: Pause revokes the automatic start of the stream it paused, not of the next one:
+        // a later stream owns a new generation and must still start on its own prebuffer deadline.
+        let scheduler = ManualAutomaticPlaybackScheduler()
+        let stateUpdates = AudioStateUpdateRecorder()
+        let pausedStreamState = stateUpdates.expectNextUpdate()
+        let player = AudioPlayerManager(
+            automaticPlaybackScheduler: scheduler.schedule,
+            audioStateObserver: stateUpdates.record
+        )
+        defer { player.stop() }
+        let pausedGeneration = player.startNewStream()
+        player.scheduleAudio(data: Data(repeating: 0, count: 2), streamGeneration: pausedGeneration)
+        wait(for: [pausedStreamState], timeout: 1.0)
+        player.play()
+        player.pause()
+
+        let nextGeneration = player.startNewStream()
+        let nextStreamState = stateUpdates.expectNextUpdate()
+        player.scheduleAudio(data: Data(repeating: 0, count: 2), streamGeneration: nextGeneration)
+        wait(for: [nextStreamState], timeout: 1.0)
+        XCTAssertEqual(scheduler.scheduledActionCount, 2)
+
+        scheduler.runNextAction()
+        assertPlayingState(of: player, is: false)
+        scheduler.runNextAction()
+
+        assertPlayingState(of: player, is: true)
+    }
+
+    func testPausedStreamKeepsBufferingPCMUnderItsOwnGeneration() {
+        // WHY: Pause revokes the pending automatic start, not the stream. The network keeps
+        // delivering while the user is paused, so PCM scheduled under the paused generation must
+        // still buffer for Resume. Revoking by retiring that generation instead would satisfy every
+        // other pause regression here while silently discarding the rest of the audio.
+        let scheduler = ManualAutomaticPlaybackScheduler()
+        let audioDataProcessing = AudioDataProcessingRecorder()
+        let stateUpdates = AudioStateUpdateRecorder()
+        let bufferedAudioState = stateUpdates.expectNextUpdate()
+        let player = AudioPlayerManager(
+            automaticPlaybackScheduler: scheduler.schedule,
+            audioDataProcessingObserver: audioDataProcessing.record,
+            audioStateObserver: stateUpdates.record
+        )
+        defer { player.stop() }
+        let generation = player.startNewStream()
+        player.scheduleAudio(data: Data(repeating: 0, count: 1_024), streamGeneration: generation)
+        wait(for: [bufferedAudioState], timeout: 1.0)
+        let bufferDurationWhenPaused = player.bufferDuration
+
+        player.play()
+        player.pause()
+
+        let laterPacketProcessed = audioDataProcessing.expectNextProcessing()
+        player.scheduleAudio(data: Data(repeating: 0, count: 2_048), streamGeneration: generation)
+        wait(for: [laterPacketProcessed], timeout: 1.0)
+        scheduler.runNextAction()
+        // Drains the main queue, so any publication the later packet enqueued has been applied, and
+        // proves the released prebuffer deadline still cannot override the pause.
+        assertPlayingState(of: player, is: false)
+
+        XCTAssertGreaterThan(player.bufferDuration, bufferDurationWhenPaused)
+        XCTAssertEqual(player.bufferDuration, Double(1_536) / 24_000.0, accuracy: 0.000_001)
+
+        player.play()
+        XCTAssertTrue(player.isPlaying)
+    }
+
     func testAutomaticPlaybackFromReplacedGenerationCannotStartNewStream() {
         // WHY: A late callback from a replaced request must not start playback for audio that
         // belongs to a newer generation.
@@ -201,115 +321,5 @@ final class AudioPlayerManagerAutomaticPlaybackTests: XCTestCase {
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 1.0)
-    }
-}
-
-private final class AudioDataProcessingRecorder {
-    private let lock = NSLock()
-    private var pendingExpectations: [XCTestExpectation] = []
-
-    func expectNextProcessing() -> XCTestExpectation {
-        let expectation = XCTestExpectation(description: "Audio queue finishes processing a network packet")
-        lock.lock()
-        pendingExpectations.append(expectation)
-        lock.unlock()
-        return expectation
-    }
-
-    func record() {
-        lock.lock()
-        let expectation = pendingExpectations.isEmpty ? nil : pendingExpectations.removeFirst()
-        lock.unlock()
-        expectation?.fulfill()
-    }
-}
-
-private final class FailingAudioEngineStarter {
-    private(set) var callCount = 0
-
-    func start(_: AVAudioEngine) throws {
-        callCount += 1
-        throw TestAudioEngineStartError.failed
-    }
-}
-
-private enum TestAudioEngineStartError: Error {
-    case failed
-}
-
-private final class ManualAutomaticPlaybackScheduler {
-    private let lock = NSLock()
-    private var actions: [() -> Void] = []
-    private var delays: [TimeInterval] = []
-
-    var scheduledActionCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return actions.count
-    }
-
-    var scheduledDelays: [TimeInterval] {
-        lock.lock()
-        defer { lock.unlock() }
-        return delays
-    }
-
-    func schedule(after delay: TimeInterval, _ action: @escaping () -> Void) {
-        lock.lock()
-        delays.append(delay)
-        actions.append(action)
-        lock.unlock()
-    }
-
-    func runNextAction() {
-        lock.lock()
-        let action = actions.removeFirst()
-        lock.unlock()
-        action()
-    }
-}
-
-private final class ScheduledPCMBufferRecorder {
-    private let lock = NSLock()
-    private var bufferCount = 0
-    private var frameCount: AVAudioFrameCount = 0
-
-    var count: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return bufferCount
-    }
-
-    var totalFrameCount: AVAudioFrameCount {
-        lock.lock()
-        defer { lock.unlock() }
-        return frameCount
-    }
-
-    func record(_ buffer: AVAudioPCMBuffer) {
-        lock.lock()
-        bufferCount += 1
-        frameCount += buffer.frameLength
-        lock.unlock()
-    }
-}
-
-private final class AudioStateUpdateRecorder {
-    private let lock = NSLock()
-    private var pendingExpectations: [XCTestExpectation] = []
-
-    func expectNextUpdate() -> XCTestExpectation {
-        let expectation = XCTestExpectation(description: "Buffered-audio state is published")
-        lock.lock()
-        pendingExpectations.append(expectation)
-        lock.unlock()
-        return expectation
-    }
-
-    func record() {
-        lock.lock()
-        let expectation = pendingExpectations.isEmpty ? nil : pendingExpectations.removeFirst()
-        lock.unlock()
-        expectation?.fulfill()
     }
 }

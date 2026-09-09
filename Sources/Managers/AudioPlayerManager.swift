@@ -249,7 +249,14 @@ final class AudioPlayerManager: ObservableObject, @unchecked Sendable {
         startProgressTimer()
     }
 
+    /// Pauses playback and revokes the current stream's pending automatic start.
+    ///
+    /// The deferred start only observes `isPlaying`, which pausing clears, so without recording the
+    /// intent against the paused generation the prebuffer deadline would undo an explicit Pause.
+    /// Binding it to `scheduleGeneration` keeps the revocation to the stream that was paused: a
+    /// later stream begins from a new generation, and `play()` still resumes this one on demand.
     func pause() {
+        bufferQueue.sync { automaticPlaybackSuppressedGeneration = scheduleGeneration }
         playerNode.pause()
         isPlaying = false
         stopProgressTimer()

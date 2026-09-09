@@ -63,10 +63,6 @@ Finding IDs preserve the full-project review's numbering. NB22 is completed by t
 
 **Validated — audio probe; legacy Task 52, promoted to Blocking.** The timer pauses at the received buffer end, and one-shot automatic playback never resumes later PCM. A 0.3-second buffer grew to 0.6 seconds while playback stayed paused at 0.3. **Paths:** [AudioPlayerManager](Sources/Managers/AudioPlayerManager.swift), [network completion](Sources/Managers/TTSNetworkManager+Failures.swift), focused audio/network tests. **Depends on:** NB19's ordered terminal-event interface (D1). **Acceptance:** distinguish open-stream underrun, manual pause, and finished playback. Later PCM resumes only underrun, at the current position, without replay or another prebuffer. Completion follows accepted PCM; stale terminal events cannot affect a replacement. Inject deterministic render-progress input and cover manual pause, genuine end, delayed final PCM, and cancellation. Document the state transitions.
 
-#### B3 — Pending automatic playback overrides Pause
-
-**Validated — controllable-prebuffer probe.** Play then Pause before the automatic callback runs leaves it authorized; releasing it sets isPlaying back to true. **Paths:** [AudioPlayerManager](Sources/Managers/AudioPlayerManager.swift), [automatic playback tests](Tests/AudioPlayerManagerAutomaticPlaybackTests.swift). **Boundary/acceptance:** [B3 execution boundary](#b3-execution-boundary). **Readiness:** independent local fix.
-
 #### B4 — A queued progress tick applies old render time after seeking
 
 **Validated — original timer-body probe with scratch-only access to fire it.** A pre-seek tick later advanced a seek from 1.8 to 2.0 seconds and paused a two-second buffer. **Paths:** [AudioPlayerManager](Sources/Managers/AudioPlayerManager.swift), [audio tests](Tests/AudioPlayerManagerTests.swift). **Boundary/acceptance:** [B4 execution boundary](#b4-execution-boundary). **Readiness:** independent local fix; preserve B2's separate state-machine boundary.
@@ -189,11 +185,7 @@ Finding IDs preserve the full-project review's numbering. NB22 is completed by t
 
 ## Ready for implementation
 
-These initial full boundaries are referenced from the backlog rather than duplicated there. Suggested order: local B3/B4 fixes; NB19; B2 and NB9; response/credential work; settings/catalog simplification. This is priority guidance, not a phase fence. Every change needs its assigned scope.
-
-### B3 execution boundary
-
-**Intent:** Pause revokes the pending automatic start for its stream. **Dependencies:** none. **Implementation:** inspect automaticPlaybackSuppressedGeneration and make Pause's intent survive prebuffer delivery using the smallest coherent state change. **Non-goals:** prebuffer duration, underrun/end redesign, loss of explicit Resume, exact-end replay, replacement, or generation guards. **Validation:** queue a controlled start, manually play/pause, release it, and remain paused. Also prove a fresh stream starts, explicit Resume works, and stale generations cannot start. Falsify lost pause intent and over-restriction of legitimate playback. **Done:** callback cannot override Pause; focused regressions, gates, docs, and review pass.
+These initial full boundaries are referenced from the backlog rather than duplicated there. Suggested order: the local B4 fix; NB19; B2 and NB9; response/credential work; settings/catalog simplification. This is priority guidance, not a phase fence. Every change needs its assigned scope.
 
 ### B4 execution boundary
 
@@ -201,7 +193,7 @@ These initial full boundaries are referenced from the backlog rather than duplic
 
 ### NB19 execution boundary
 
-**Intent:** implement D1's shared owner and the ordered terminal interface B2 needs, preserving entry-point product policy. **Dependencies:** build on the landed B1 test-ownership contract and re-read final B3/B4 code if landed; introduce the owner before B2.
+**Intent:** implement D1's shared owner and the ordered terminal interface B2 needs, preserving entry-point product policy. **Dependencies:** build on the landed B1 test-ownership contract and re-read the landed B3 pause-revocation code and final B4 code if landed; introduce the owner before B2.
 
 **Implementation:**
 
@@ -216,6 +208,7 @@ These initial full boundaries are referenced from the backlog rather than duplic
 ## Deferred, accepted, and completed dispositions
 
 - **B1 — Fixed.** Tests own the settings storage they state; `SettingsView` binds every `@AppStorage` to the domain it is handed, and the mock-network lifecycle no longer snapshots, clears, or restores the app's own domain. Two isolation tests name the domain by identity, but no runtime test observes which domain an ordinary call site was handed, so that guarantee is held by the compiler (no settings API in `Sources` defaults to `.standard`), by `InMemoryDefaults` owning its inherited surface, and by the `process_default_settings_store` and `test_owned_settings_storage` lint rules over the named routes in `Sources` and `Tests`. README owns the current contract. NB17 and NB18 build on this ownership rather than reopening it.
+- **B3 — Fixed.** `AudioPlayerManager.pause()` records the paused stream's `scheduleGeneration` in `automaticPlaybackSuppressedGeneration`, so the pending automatic start the prebuffer deadline releases finds the intent it would otherwise reverse. The revocation is bound to the stream that was paused and released by `stop()`, so `play()` still resumes that stream and a later stream keeps its own deadline. Pause does not retire the scheduling generation, so the paused stream keeps buffering the PCM that arrives behind it; a regression pins that, because revoking by retiring the generation otherwise satisfies every other pause assertion while truncating the audio. README owns the current contract. B2 still owns underrun recovery and the end-of-playback state machine, which this change did not touch.
 - **Accepted without change — `InMemoryDefaults`' inert domain mutators (2026-09-06).** Registration, named-domain, suite, and volatile-domain mutators succeed while doing nothing, so a future production path invoking one through an injected store would look correct under test while production mutated real state. Accepted because no production path calls them, the behavior is fail-closed for B1's isolation goal, and the lint rule refuses those calls from `Tests/`. **Revisit if** production code ever calls a domain-level `UserDefaults` member through an injected store.
 - **NB22 — Completed by this TODO rewrite:** the active backlog/decision register replaces the stale phase handoff. No implementation finding is marked fixed by this documentation change.
 - No other implementation finding has been deferred or accepted without change.
