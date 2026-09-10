@@ -7,6 +7,8 @@ struct MenuBarView: View {
     @ObservedObject var networkManager: TTSNetworkManager
     /// The app-lifetime owner of the deferred clipboard read; see `speakCopiedText()`.
     let deferredClipboardAction: DeferredClipboardAction
+    /// The shared owner of what is speaking; the menu contributes only its own click policy.
+    let speechSession: SpeechSessionCoordinator
     /// Owns reactivating the app and showing what a refused click must tell the user.
     ///
     /// Deliberately has no default, like `SettingsView`'s injected `UserDefaults`: a call site that
@@ -106,8 +108,7 @@ struct MenuBarView: View {
 
     func speakCopiedText() {
         if networkManager.isStreaming || audioPlayer.hasAudio {
-            networkManager.stopStreaming()
-            audioPlayer.stop()
+            speechSession.cancel()
         } else {
             guard isReadyForNewSpeech else { return }
             NSApp.deactivate()
@@ -127,10 +128,7 @@ struct MenuBarView: View {
                       isReadyForNewSpeech,
                       let text = textExtraction.getCopiedText() else { return }
                 guard !refusesOversizedOpenAIText(text) else { return }
-                let gen = audioPlayer.startNewStream()
-                networkManager.streamTTS(text: text) { [audioPlayer] data in
-                    audioPlayer.scheduleAudio(data: data, streamGeneration: gen)
-                }
+                speechSession.start(text: text)
             }
         }
     }

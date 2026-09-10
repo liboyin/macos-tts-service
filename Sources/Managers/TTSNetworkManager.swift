@@ -94,7 +94,8 @@ final class TTSNetworkManager: NSObject, ObservableObject, URLSessionDataDelegat
         let provider: ProviderKind
         /// The request this attempt sent, retained so its permitted retry replays exactly it.
         let request: URLRequest
-        let dataHandler: @Sendable (Data) -> Void
+        /// Receives this request's PCM and, behind all of it, the one terminal event it delivers.
+        let client: SpeechStreamClient
         /// Whether this attempt is itself the retry, which is what bounds recovery to one extra try.
         let isRetryAttempt: Bool
         var isErrorResponse = false

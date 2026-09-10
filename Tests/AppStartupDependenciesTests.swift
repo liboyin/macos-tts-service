@@ -2,6 +2,34 @@ import XCTest
 @testable import ClipboardTTSApp
 
 final class AppStartupDependenciesTests: XCTestCase {
+    func testStartupPairsTheSessionOwnerWithTheManagersItReturns() {
+        // WHY: The scenes render the returned managers, and every entry point speaks through the
+        // returned session owner. An owner built over a different player or manager would send
+        // speech into a pipeline the menu neither shows nor controls, and every entry-point and
+        // coordinator test would still pass, because each of those builds its own correctly paired
+        // owner rather than the one production composes here.
+        let dependencies = AppStartupDependencies.make(isHostedTest: true)
+        defer { dependencies.networkManager.session.invalidateAndCancel() }
+        let generationBeforeCancel = dependencies.networkManager.currentRequestGeneration()
+        dependencies.audioPlayer.hasAudio = true
+
+        dependencies.speechSession.cancel()
+
+        XCTAssertFalse(
+            dependencies.audioPlayer.hasAudio,
+            "The session owner must clear the audio of the player the scenes render."
+        )
+        XCTAssertNotEqual(
+            dependencies.networkManager.currentRequestGeneration(),
+            generationBeforeCancel,
+            "The session owner must release the request of the manager the scenes render."
+        )
+        XCTAssertTrue(
+            dependencies.servicesCoordinator.speechSession === dependencies.speechSession,
+            "Services must speak through the same session owner the scenes were handed."
+        )
+    }
+
     func testHostedTestStartupUsesOnlyTestOwnedSettingsAndSecrets() {
         // WHY: XCTest initializes the app before any test can clear the installed app's defaults.
         // If that startup path falls back to production dependencies, legacy migration can read or

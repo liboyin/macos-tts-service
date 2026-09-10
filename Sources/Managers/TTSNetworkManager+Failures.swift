@@ -18,6 +18,9 @@ extension TTSNetworkManager {
         let geminiDeclaredFinishReason: String?
         let didRefuseInsecureRedirect: Bool
         let retryAttempt: RetryAttempt?
+        /// The client to terminate. A stale completion carries an inert one: its task is not the
+        /// active request, so it owns no session and returns before this is read.
+        let client: SpeechStreamClient
         let isStale: Bool
     }
 
@@ -34,6 +37,7 @@ extension TTSNetworkManager {
                     geminiDeclaredFinishReason: nil,
                     didRefuseInsecureRedirect: false,
                     retryAttempt: nil,
+                    client: SpeechStreamClient(didReceiveAudio: { _ in }, didTerminate: { _ in }),
                     isStale: true
                 )
             }
@@ -48,6 +52,7 @@ extension TTSNetworkManager {
                 geminiDeclaredFinishReason: context.geminiDeclaredFinishReason,
                 didRefuseInsecureRedirect: context.didRefuseInsecureRedirect,
                 retryAttempt: context.hasGeminiStreamFailure ? nil : permittedRetryAttempt(for: context, error: error),
+                client: context.client,
                 isStale: false
             )
             if !context.hasGeminiStreamFailure {
@@ -76,7 +81,7 @@ extension TTSNetworkManager {
             request: context.request,
             provider: context.provider,
             requestGeneration: context.requestGeneration,
-            dataHandler: context.dataHandler
+            client: context.client
         )
     }
 
@@ -86,21 +91,32 @@ extension TTSNetworkManager {
         // A retry that starts owns the rest of this logical request, including what it publishes.
         if let retryAttempt = result.retryAttempt, startRetryAttempt(retryAttempt) { return }
         let requestGeneration: UInt64?
+        let client: SpeechStreamClient
         if result.hasGeminiStreamFailure {
             guard let dataTask = task as? URLSessionDataTask,
                   let revocation = revokeFailedGeminiRequest(for: dataTask) else {
                 return
             }
             requestGeneration = revocation.requestGeneration
+            client = revocation.client
         } else {
             requestGeneration = result.requestGeneration
+            client = result.client
         }
 
-        if let failureMessage = userFacingFailure(for: result, error: error) {
+        let failureMessage = userFacingFailure(for: result, error: error)
+        if let failureMessage {
             publishFailure(failureMessage, requestGeneration: requestGeneration)
         } else {
             setStreaming(false, requestGeneration: requestGeneration)
         }
+        // Queued after the request's terminal state is published, and behind every byte of PCM this
+        // task delivered, because both reach the client through the same guarded delivery queue.
+        enqueueStreamTermination(
+            failureMessage == nil ? .finished : .failed,
+            client: client,
+            requestGeneration: requestGeneration
+        )
     }
 
     /// Returns the app-owned message a finished request must publish, or nil when it succeeded.

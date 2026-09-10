@@ -321,7 +321,10 @@ final class MenuBarOpenAILimitTests: MockURLProtocolTestCase {
         view.speakCopiedText()
 
         let center = NotificationCenter()
-        let coordinator = ServicesCoordinator(audioPlayer: audioPlayer, networkManager: networkManager, notificationCenter: center)
+        let coordinator = ServicesCoordinator(
+            speechSession: SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager),
+            notificationCenter: center
+        )
         withExtendedLifetime(coordinator) {
             center.post(name: ServicesCoordinator.speakSelectedTextNotification, object: "Selected text")
             XCTAssertTrue(networkManager.isStreaming, "The Services request must own the pipeline.")

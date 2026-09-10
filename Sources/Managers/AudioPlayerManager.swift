@@ -31,6 +31,11 @@ final class AudioPlayerManager: ObservableObject, @unchecked Sendable {
     @Published var playbackProgress: Double = 0.0
     @Published var bufferDuration: Double = 0.0
     @Published var hasAudio = false
+    /// How the request feeding the current stream ended, or nil while that stream is still open.
+    ///
+    /// It is set only by `finishStream(streamGeneration:termination:)`, and cleared by `stop()`, so
+    /// it always describes the session the buffered PCM belongs to rather than an earlier one.
+    @Published private(set) var streamTermination: SpeechStreamTermination?
     @Published private(set) var sampleRate: Double = defaultSampleRate
     @Published private(set) var sampleRateError: String?
     @Published private(set) var hasValidSampleRateInput = true
@@ -71,8 +76,8 @@ final class AudioPlayerManager: ObservableObject, @unchecked Sendable {
     /// Creates the audio graph. The buffer observer is notified after each buffer is passed to the node.
     /// The scheduler defers automatic playback after the first complete PCM frame. The rendered-sample-time
     /// reader supplies each progress tick its position, and the timer scheduler decides where the timer
-    /// driving those ticks runs. The processing observer runs after the audio queue
-    /// handles a packet, and the state observer runs after publication.
+    /// driving those ticks runs. The processing observer runs after the audio queue handles a
+    /// packet or a terminal event, and the state observer runs after publication.
     init(sampleRate: Double = AudioPlayerManager.defaultSampleRate,
          scheduledBufferObserver: @escaping (AVAudioPCMBuffer) -> Void = { _ in },
          engineStarter: @escaping (AVAudioEngine) throws -> Void = { try $0.start() },
@@ -251,6 +256,29 @@ final class AudioPlayerManager: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Records how the request feeding `streamGeneration` ended, behind that stream's own PCM.
+    ///
+    /// It joins `bufferQueue` exactly as `scheduleAudio` does, so a terminal event the network
+    /// manager released after a chunk of PCM cannot be applied before that chunk is buffered: both
+    /// reach the main queue from the same serial queue, in the order they arrived on it.
+    ///
+    /// Ownership is checked once, where the value is published. Checking it again on `bufferQueue`
+    /// beforehand would decide nothing: `scheduleGeneration` only advances, so an ending that queue
+    /// would already reject is rejected by the publication check as well, while an ending it would
+    /// accept can still be replaced before that publication runs. Rejecting is what keeps the
+    /// session that replaced this one from being told that somebody else's request ended.
+    func finishStream(streamGeneration: Int, termination: SpeechStreamTermination) {
+        bufferQueue.async {
+            defer { self.audioObservers.processed() }
+
+            DispatchQueue.main.async {
+                guard self.bufferQueue.sync(execute: { self.scheduleGeneration == streamGeneration }) else { return }
+                self.streamTermination = termination
+                self.audioObservers.statePublished()
+            }
+        }
+    }
+
     func play() {
         if !engine.isRunning {
             do {
@@ -306,6 +334,7 @@ final class AudioPlayerManager: ObservableObject, @unchecked Sendable {
             self.hasAudio = false
             self.bufferDuration = 0.0
             self.playbackProgress = 0.0
+            self.streamTermination = nil
         }
         if Thread.isMainThread {
             updatePublishedState()

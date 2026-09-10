@@ -18,6 +18,8 @@ struct SettingsView: View {
 
     @ObservedObject private var networkManager: TTSNetworkManager
     @ObservedObject private var audioPlayer: AudioPlayerManager
+    /// The shared owner of what is speaking, which Test Voice starts a session through.
+    private let speechSession: SpeechSessionCoordinator
     @StateObject private var secretState: SettingsSecretState
     private let aboutAction: AboutAction
 
@@ -44,11 +46,13 @@ struct SettingsView: View {
     /// rather than the private one startup built.
     init(networkManager: TTSNetworkManager,
          audioPlayer: AudioPlayerManager,
+         speechSession: SpeechSessionCoordinator,
          secretStore: SecretStoring = KeychainSecretStore(),
          defaults: UserDefaults,
          aboutAction: AboutAction = AboutAction()) {
         self.networkManager = networkManager
         self.audioPlayer = audioPlayer
+        self.speechSession = speechSession
         self.aboutAction = aboutAction
         _secretState = StateObject(wrappedValue: SettingsSecretState(secretStore: secretStore, defaults: defaults))
         _ttsProvider = AppStorage(wrappedValue: Fallback.ttsProvider, SettingsKeys.ttsProvider, store: defaults)
@@ -290,16 +294,17 @@ struct SettingsView: View {
         networkManager.updateMigrationFailureWarning(for: secretState.pendingMigrationProviders.first)
     }
 
+    /// Speaks the sample sentence with whatever the form currently shows.
+    ///
+    /// Normalization, format validation, and the credential handoff stay here because they belong
+    /// to the form: they turn the draft being edited into the settings a request reads. Only then
+    /// does the session owner replace what was speaking, so the sample uses the configuration
+    /// under test.
     func runTestVoice() {
         normalizeSelectedProvider()
         guard syncAudioFormat() else { return }
         applyCredentialsToFutureRequests()
-        networkManager.stopStreaming()
-        audioPlayer.stop()
-        let gen = audioPlayer.startNewStream()
-        networkManager.streamTTS(text: "Hello! This is a test of your text to speech configuration.") { [audioPlayer] data in
-            audioPlayer.scheduleAudio(data: data, streamGeneration: gen)
-        }
+        speechSession.start(text: "Hello! This is a test of your text to speech configuration.")
     }
 
     func providerDidChange(to newValue: String) {

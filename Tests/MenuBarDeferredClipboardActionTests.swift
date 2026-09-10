@@ -60,7 +60,10 @@ final class MenuBarDeferredClipboardActionTests: MockURLProtocolTestCase {
         XCTAssertEqual(pasteboard.readCount, 0, "The pasteboard must not be read before the delay elapses.")
 
         let center = NotificationCenter()
-        let coordinator = ServicesCoordinator(audioPlayer: audioPlayer, networkManager: networkManager, notificationCenter: center)
+        let coordinator = ServicesCoordinator(
+            speechSession: SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager),
+            notificationCenter: center
+        )
         withExtendedLifetime(coordinator) {
             // Runs synchronously on this thread, so the request owns the pipeline before the
             // stale action executes and no publication can land between the two.
@@ -206,7 +209,10 @@ final class MenuBarDeferredClipboardActionTests: MockURLProtocolTestCase {
         XCTAssertEqual(deferral.requestedDelays, [0.2])
 
         let center = NotificationCenter()
-        let coordinator = ServicesCoordinator(audioPlayer: audioPlayer, networkManager: networkManager, notificationCenter: center)
+        let coordinator = ServicesCoordinator(
+            speechSession: SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager),
+            notificationCenter: center
+        )
         withExtendedLifetime(coordinator) {
             assertTerminalState(
                 of: networkManager,

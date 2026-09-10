@@ -110,7 +110,10 @@ final class TTSNetworkManagerRetryBoundaryTests: MockURLProtocolTestCase {
             request: URLRequest(url: URL(string: endpoint)!),
             provider: .gemini,
             requestGeneration: revokedGeneration,
-            dataHandler: { _ in XCTFail("A revoked retry must not deliver audio.") }
+            client: SpeechStreamClient(
+                didReceiveAudio: { _ in XCTFail("A revoked retry must not deliver audio.") },
+                didTerminate: { _ in XCTFail("A revoked retry must not end a session it never owned.") }
+            )
         )
 
         XCTAssertFalse(manager.startRetryAttempt(attempt), "A retry whose generation was revoked must report that it did not start.")

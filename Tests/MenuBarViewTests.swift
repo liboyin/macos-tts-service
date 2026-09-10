@@ -20,20 +20,26 @@ extension RecordingMenuAlertPresenter: MenuAlertPresenting {
     }
 }
 
-/// Builds the menu with its own deferred-action owner and alert recorder unless a test needs to
-/// control either. The alert presenter never defaults to the production one, so no test can raise
-/// a modal panel that nothing would dismiss.
+/// Builds the menu with its own deferred-action owner, session owner, and alert recorder unless a
+/// test needs to control one. The alert presenter never defaults to the production one, so no test
+/// can raise a modal panel that nothing would dismiss.
+///
+/// `speechSession` defaults to a session owner over the very managers this menu was handed, which
+/// is the pairing production wires; a test states its own only to observe what the menu starts.
 @MainActor
 func makeMenu(audioPlayer: AudioPlayerManager,
               textExtraction: TextExtractionManager,
               networkManager: TTSNetworkManager,
               deferredClipboardAction: DeferredClipboardAction = DeferredClipboardAction(),
+              speechSession: SpeechSessionCoordinator? = nil,
               alertPresenter: MenuAlertPresenting = RecordingMenuAlertPresenter()) -> MenuBarView {
     MenuBarView(
         audioPlayer: audioPlayer,
         textExtraction: textExtraction,
         networkManager: networkManager,
         deferredClipboardAction: deferredClipboardAction,
+        speechSession: speechSession
+            ?? SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager),
         alertPresenter: alertPresenter
     )
 }

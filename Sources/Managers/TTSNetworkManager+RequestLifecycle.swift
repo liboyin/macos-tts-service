@@ -20,14 +20,14 @@ extension TTSNetworkManager {
         let request: URLRequest
         let provider: ProviderKind
         let requestGeneration: UInt64
-        let dataHandler: @Sendable (Data) -> Void
+        let client: SpeechStreamClient
     }
 
     private func replaceActiveRequest(with task: URLSessionDataTask,
                                       request: URLRequest,
                                       provider: ProviderKind,
                                       requestGeneration: UInt64,
-                                      dataHandler: @escaping @Sendable (Data) -> Void,
+                                      client: SpeechStreamClient,
                                       isRetryAttempt: Bool = false) -> Bool {
         stateQueue.sync {
             // Swap all task-owned state together so a previous task cannot deliver its data to
@@ -40,7 +40,7 @@ extension TTSNetworkManager {
                 requestGeneration: requestGeneration,
                 provider: provider,
                 request: request,
-                dataHandler: dataHandler,
+                client: client,
                 isRetryAttempt: isRetryAttempt
             )
             return true
@@ -63,7 +63,7 @@ extension TTSNetworkManager {
             request: attempt.request,
             provider: attempt.provider,
             requestGeneration: attempt.requestGeneration,
-            dataHandler: attempt.dataHandler,
+            client: attempt.client,
             isRetryAttempt: true
         ) else {
             task.cancel()
@@ -91,9 +91,18 @@ extension TTSNetworkManager {
         }
     }
 
+    /// Starts one speech request, delivering its PCM and then exactly one terminal event.
+    ///
+    /// The audio-only spelling exists for a caller with no session to end — a focused test of
+    /// transport, failure copy, or metadata. `SpeechSessionCoordinator` is the production caller,
+    /// and it always names a full client.
     func streamTTS(text: String, dataHandler: @escaping @Sendable (Data) -> Void) {
+        streamTTS(text: text, client: SpeechStreamClient(didReceiveAudio: dataHandler, didTerminate: { _ in }))
+    }
+
+    func streamTTS(text: String, client: SpeechStreamClient) {
         if deferRequestStartIfPublishingState({ [weak self] in
-            self?.streamTTS(text: text, dataHandler: dataHandler)
+            self?.streamTTS(text: text, client: client)
         }) {
             return
         }
@@ -101,7 +110,8 @@ extension TTSNetworkManager {
         clearLastError(requestGeneration: requestGeneration)
         let settings = requestSettingsSnapshot()
         guard settings.provider != .custom || hasNonWhitespaceModelAndVoice(settings) else {
-            publishFailure("Custom TTS requires a model and voice. Update Settings and try again.", requestGeneration: requestGeneration)
+            failRequestBeforeItStarts("Custom TTS requires a model and voice. Update Settings and try again.",
+                                      requestGeneration: requestGeneration, client: client)
             return
         }
         let url: URL
@@ -109,10 +119,12 @@ extension TTSNetworkManager {
         case .allowed(let endpoint):
             url = endpoint
         case .malformed:
-            publishFailure("TTS configuration is invalid. Check the API endpoint and try again.", requestGeneration: requestGeneration)
+            failRequestBeforeItStarts("TTS configuration is invalid. Check the API endpoint and try again.",
+                                      requestGeneration: requestGeneration, client: client)
             return
         case .insecureTransport:
-            publishFailure(Self.insecureTransportFailure, requestGeneration: requestGeneration)
+            failRequestBeforeItStarts(Self.insecureTransportFailure,
+                                      requestGeneration: requestGeneration, client: client)
             return
         }
 
@@ -129,7 +141,8 @@ extension TTSNetworkManager {
         do {
             request.httpBody = try encodedRequestBody(text: text, settings: settings)
         } catch {
-            publishFailure("Couldn't prepare the speech request. Check the settings and try again.", requestGeneration: requestGeneration)
+            failRequestBeforeItStarts("Couldn't prepare the speech request. Check the settings and try again.",
+                                      requestGeneration: requestGeneration, client: client)
             return
         }
 
@@ -139,7 +152,7 @@ extension TTSNetworkManager {
             request: request,
             provider: settings.provider,
             requestGeneration: requestGeneration,
-            dataHandler: dataHandler
+            client: client
         ) else {
             task.cancel()
             return
@@ -147,6 +160,18 @@ extension TTSNetworkManager {
 
         setStreaming(true, requestGeneration: requestGeneration)
         task.resume()
+    }
+
+    /// Publishes a failure a request hit before it owned a task, and terminates its session.
+    ///
+    /// The caller already took an audio generation for this request, so a session exists even
+    /// though no task ever will. Leaving it without a terminal event would leave that session
+    /// waiting for PCM it can never receive, which is exactly what the terminal event exists to
+    /// rule out. It is queued through the same guarded handoff a delivered request uses, so a
+    /// replacement that already claimed the pipeline withdraws it.
+    private func failRequestBeforeItStarts(_ message: String, requestGeneration: UInt64, client: SpeechStreamClient) {
+        publishFailure(message, requestGeneration: requestGeneration)
+        enqueueStreamTermination(.failed, client: client, requestGeneration: requestGeneration)
     }
 
     func stopStreaming() {

@@ -84,8 +84,38 @@ extension TTSNetworkManager {
         }
     }
 
+    /// Queues one request's terminal event, behind every delivery that request already queued.
+    ///
+    /// It takes the same serial delivery queue, callback authority, and generation guard as
+    /// `enqueueAudioDelivery`. The queue is what orders a session's terminal event behind its PCM:
+    /// URLSession delivers a task's data callbacks before its completion callback, and each of
+    /// those enqueues here in turn. The generation guard is what withdraws the event when something
+    /// else claimed the pipeline first, so a stopped or replaced session is never told that the
+    /// request it no longer owns has ended.
+    func enqueueStreamTermination(_ termination: SpeechStreamTermination,
+                                  client: SpeechStreamClient,
+                                  requestGeneration: UInt64?) {
+        audioDeliveryQueue.async { [weak self] in
+            guard let self else { return }
+            self.callbackAuthority.lock()
+            defer { self.callbackAuthority.unlock() }
+            guard self.isCurrentRequestGeneration(requestGeneration) else { return }
+            client.didTerminate(termination)
+        }
+    }
+
+    /// What a revoked malformed Gemini stream leaves its caller to finish reporting.
+    ///
+    /// The revocation clears the request context, so the generation its terminal state publishes
+    /// against and the client that must be told the session ended both have to travel out with it.
+    struct FailedGeminiRevocation {
+        let task: URLSessionDataTask
+        let requestGeneration: UInt64
+        let client: SpeechStreamClient
+    }
+
     /// Finishes revoking a malformed Gemini stream while holding the callback authority boundary.
-    func revokeFailedGeminiRequest(for task: URLSessionDataTask) -> (task: URLSessionDataTask, requestGeneration: UInt64)? {
+    func revokeFailedGeminiRequest(for task: URLSessionDataTask) -> FailedGeminiRevocation? {
         callbackAuthority.lock()
         defer { callbackAuthority.unlock() }
         return stateQueue.sync {
@@ -95,7 +125,11 @@ extension TTSNetworkManager {
                 return nil
             }
             activeRequest = nil
-            return (context.task, requestGeneration)
+            return FailedGeminiRevocation(
+                task: context.task,
+                requestGeneration: requestGeneration,
+                client: context.client
+            )
         }
     }
 
@@ -129,7 +163,7 @@ extension TTSNetworkManager {
             }
             guard !data.isEmpty else { return nil }
             context.providerAudioByteCount += data.count
-            let dataHandler = context.dataHandler
+            let dataHandler = context.client.didReceiveAudio
             let deliveryGeneration = context.requestGeneration
             // Enqueue while stateQueue owns this context, rather than after its lock is released,
             // so a later concurrent delegate callback cannot overtake this PCM chunk.
@@ -143,6 +177,7 @@ extension TTSNetworkManager {
         }
         revocation.task.cancel()
         publishFailure("The TTS service returned no playable audio. Please try again.", requestGeneration: revocation.requestGeneration)
+        enqueueStreamTermination(.failed, client: revocation.client, requestGeneration: revocation.requestGeneration)
     }
 
     /// Decodes complete SSE events while `stateQueue` owns their request context.
@@ -160,7 +195,7 @@ extension TTSNetworkManager {
             switch content.payload {
             case let .audio(audioData):
                 guard let playableAudio = recordGeminiAudio(audioData, in: &context) else { continue }
-                let dataHandler = context.dataHandler
+                let dataHandler = context.client.didReceiveAudio
                 enqueueAudioDelivery(
                     playableAudio,
                     dataHandler: dataHandler,

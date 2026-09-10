@@ -21,6 +21,7 @@ struct AppStartupDependencies {
     let audioPlayer: AudioPlayerManager
     let textExtraction: TextExtractionManager
     let networkManager: TTSNetworkManager
+    let speechSession: SpeechSessionCoordinator
     let servicesCoordinator: ServicesCoordinator
 
     /// Builds production dependencies or an entirely test-owned hosted-test dependency graph.
@@ -61,6 +62,9 @@ struct AppStartupDependencies {
             : AudioPlayerManager.defaultSampleRate
         let audioPlayer = AudioPlayerManager(sampleRate: initialSampleRate)
         let networkManager = TTSNetworkManager(secretStore: secretStore, defaults: defaults)
+        // Built here so every entry point speaks through one session owner holding one manager
+        // pair, rather than each surface pairing whichever instances it happens to be handed.
+        let speechSession = SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager)
 
         return AppStartupDependencies(
             defaults: defaults,
@@ -68,7 +72,8 @@ struct AppStartupDependencies {
             audioPlayer: audioPlayer,
             textExtraction: TextExtractionManager(),
             networkManager: networkManager,
-            servicesCoordinator: ServicesCoordinator(audioPlayer: audioPlayer, networkManager: networkManager)
+            speechSession: speechSession,
+            servicesCoordinator: ServicesCoordinator(speechSession: speechSession)
         )
     }
 }
@@ -78,6 +83,11 @@ struct ClipboardTTSApp: App {
     @StateObject private var audioPlayer: AudioPlayerManager
     @StateObject private var textExtraction: TextExtractionManager
     @StateObject private var networkManager: TTSNetworkManager
+
+    // Owns what is speaking for the app's lifetime. A @StateObject for the same reason as the
+    // managers below: first-wins lifecycle keeps this pointing at the very manager pair the scene
+    // renders, which a plain stored property could not promise if the App value were rebuilt.
+    @StateObject private var speechSession: SpeechSessionCoordinator
 
     // Owns the Services-notification subscription for the app's lifetime, so the Services flow
     // works before the menu bar dropdown (and thus MenuBarView) is ever built. Held as a
@@ -105,6 +115,7 @@ struct ClipboardTTSApp: App {
         _audioPlayer = StateObject(wrappedValue: dependencies.audioPlayer)
         _textExtraction = StateObject(wrappedValue: dependencies.textExtraction)
         _networkManager = StateObject(wrappedValue: dependencies.networkManager)
+        _speechSession = StateObject(wrappedValue: dependencies.speechSession)
         _servicesCoordinator = StateObject(wrappedValue: dependencies.servicesCoordinator)
     }
 
@@ -115,6 +126,7 @@ struct ClipboardTTSApp: App {
                 textExtraction: textExtraction,
                 networkManager: networkManager,
                 deferredClipboardAction: deferredClipboardAction,
+                speechSession: speechSession,
                 alertPresenter: menuAlertPresenter
             )
         }
@@ -126,6 +138,7 @@ struct ClipboardTTSApp: App {
             SettingsView(
                 networkManager: networkManager,
                 audioPlayer: audioPlayer,
+                speechSession: speechSession,
                 secretStore: secretStore,
                 defaults: defaults
             )

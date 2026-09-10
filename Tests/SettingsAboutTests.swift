@@ -76,6 +76,7 @@ final class SettingsAboutTests: MockURLProtocolTestCase {
         let view = SettingsView(
             networkManager: networkManager,
             audioPlayer: audioPlayer,
+            speechSession: SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager),
             secretStore: secretStore,
             defaults: defaults,
             aboutAction: AboutAction(

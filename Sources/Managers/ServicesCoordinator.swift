@@ -11,19 +11,22 @@ import Foundation
 /// Marked `@unchecked Sendable` because NotificationCenter delivers the observation through a
 /// `@Sendable` closure on the posting thread. The coordinator's own state needs no further
 /// synchronization: `observer` is assigned once in `init` and read only in `deinit`. Every
-/// notification is handed to the main actor before it reads either manager's UI or engine state.
+/// notification is handed to the main actor before it reaches the main-queue-confined session
+/// owner that reads UI and engine state.
 final class ServicesCoordinator: ObservableObject, @unchecked Sendable {
     static let speakSelectedTextNotification = Notification.Name("SpeakSelectedText")
 
-    private let audioPlayer: AudioPlayerManager
-    private let networkManager: TTSNetworkManager
+    /// The session owner every entry point shares. Not private, because the composition root's
+    /// regression asserts that this is the same instance the scenes were handed: a Services flow
+    /// speaking into a second manager pair would reach a pipeline the menu neither shows nor
+    /// controls, and every other test builds its own correctly paired owner.
+    let speechSession: SpeechSessionCoordinator
     private let notificationCenter: NotificationCenter
     private let mainActionExecutor: (@escaping @MainActor @Sendable () -> Void) -> Void
     private let speechActionObserver: @MainActor () -> Void
     private var observer: NSObjectProtocol?
 
-    init(audioPlayer: AudioPlayerManager,
-         networkManager: TTSNetworkManager,
+    init(speechSession: SpeechSessionCoordinator,
          notificationCenter: NotificationCenter = .default,
          mainActionExecutor: @escaping (@escaping @MainActor @Sendable () -> Void) -> Void = { action in
              if Thread.isMainThread {
@@ -33,8 +36,7 @@ final class ServicesCoordinator: ObservableObject, @unchecked Sendable {
              }
          },
          speechActionObserver: @escaping @MainActor () -> Void = {}) {
-        self.audioPlayer = audioPlayer
-        self.networkManager = networkManager
+        self.speechSession = speechSession
         self.notificationCenter = notificationCenter
         self.mainActionExecutor = mainActionExecutor
         self.speechActionObserver = speechActionObserver
@@ -58,14 +60,14 @@ final class ServicesCoordinator: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Speaks the selection, replacing whatever was speaking.
+    ///
+    /// Services carries a selection the user made in another app, so it deliberately keeps no
+    /// two-click contract of its own: the session owner replaces the current session outright. The
+    /// refusal for an audio graph that cannot play the selected format lives there too, which is
+    /// what keeps a corrupt persisted Custom rate from decoding this selection at a silent fallback.
     @MainActor private func speak(_ text: String) {
         speechActionObserver()
-        guard audioPlayer.isReadyForNewStream else { return }
-        networkManager.stopStreaming()
-        audioPlayer.stop()
-        let gen = audioPlayer.startNewStream()
-        networkManager.streamTTS(text: text) { [audioPlayer] data in
-            audioPlayer.scheduleAudio(data: data, streamGeneration: gen)
-        }
+        speechSession.start(text: text)
     }
 }

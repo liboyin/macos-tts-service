@@ -67,6 +67,8 @@ final class HostedSettings {
         let view = SettingsView(
             networkManager: networkManager,
             audioPlayer: audioPlayer,
+            // The session owner production wires: one instance over this form's own manager pair.
+            speechSession: SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager),
             secretStore: secretStore,
             defaults: defaults,
             aboutAction: aboutAction

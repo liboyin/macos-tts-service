@@ -16,7 +16,10 @@ final class ServicesCoordinatorTests: MockURLProtocolTestCase {
         }
 
         let center = NotificationCenter()
-        let coordinator = ServicesCoordinator(audioPlayer: audioPlayer, networkManager: networkManager, notificationCenter: center)
+        let coordinator = ServicesCoordinator(
+            speechSession: SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager),
+            notificationCenter: center
+        )
 
         withExtendedLifetime(coordinator) {
             center.post(name: ServicesCoordinator.speakSelectedTextNotification, object: "Speak me")
@@ -47,7 +50,10 @@ final class ServicesCoordinatorTests: MockURLProtocolTestCase {
         }
 
         let center = NotificationCenter()
-        let coordinator = ServicesCoordinator(audioPlayer: audioPlayer, networkManager: networkManager, notificationCenter: center)
+        let coordinator = ServicesCoordinator(
+            speechSession: SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager),
+            notificationCenter: center
+        )
 
         withExtendedLifetime(coordinator) {
             center.post(
@@ -73,7 +79,10 @@ final class ServicesCoordinatorTests: MockURLProtocolTestCase {
         }
 
         let center = NotificationCenter()
-        let coordinator = ServicesCoordinator(audioPlayer: audioPlayer, networkManager: networkManager, notificationCenter: center)
+        let coordinator = ServicesCoordinator(
+            speechSession: SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager),
+            notificationCenter: center
+        )
 
         withExtendedLifetime(coordinator) {
             center.post(name: ServicesCoordinator.speakSelectedTextNotification, object: "Speak me")
@@ -102,8 +111,7 @@ final class ServicesCoordinatorTests: MockURLProtocolTestCase {
         let center = NotificationCenter()
         let speechRanOnMain = expectation(description: "Production main handoff runs speech on main")
         let coordinator = ServicesCoordinator(
-            audioPlayer: audioPlayer,
-            networkManager: networkManager,
+            speechSession: SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager),
             notificationCenter: center,
             speechActionObserver: {
                 XCTAssertTrue(Thread.isMainThread)
@@ -134,7 +142,10 @@ final class ServicesCoordinatorTests: MockURLProtocolTestCase {
         }
 
         let center = NotificationCenter()
-        let coordinator = ServicesCoordinator(audioPlayer: audioPlayer, networkManager: networkManager, notificationCenter: center)
+        let coordinator = ServicesCoordinator(
+            speechSession: SpeechSessionCoordinator(audioPlayer: audioPlayer, networkManager: networkManager),
+            notificationCenter: center
+        )
 
         withExtendedLifetime(coordinator) {
             center.post(name: ServicesCoordinator.speakSelectedTextNotification, object: 42)
